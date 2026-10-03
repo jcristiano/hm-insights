@@ -11,16 +11,15 @@ import {
 export function parseHomeBankDate(hbDateStr: string): Date {
   const hbDate = parseInt(hbDateStr, 10);
   if (isNaN(hbDate) || hbDate <= 0) return new Date(0);
+  
+  // O HomeBank usa o número de dias a partir de 01/01/0001 (Rata Die).
+  // A diferença para a época Unix (01/01/1970) é de 719163 dias.
   const utcDays = hbDate - 719163;
-  const tempDate = new Date(utcDays * 86400 * 1000);
-  return new Date(
-    tempDate.getUTCFullYear(),
-    tempDate.getUTCMonth(),
-    tempDate.getUTCDate(),
-    12,
-    0,
-    0
-  );
+  const utcMillis = utcDays * 86400 * 1000;
+  
+  const d = new Date(utcMillis);
+  // Garante que usamos a data UTC pura para criar o objeto local no meio do dia (12:00)
+  return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0);
 }
 
 export function parseHomeBankXML(xmlText: string) {
@@ -115,44 +114,60 @@ export function parseHomeBankXML(xmlText: string) {
       mainCategoryKey = payeeDefaultCategoryMap.get(payeeKey);
     }
 
-    // Check for HomeBank <split> child nodes inside <ope>
-    const splitNodes = node.getElementsByTagName('split');
-    if (splitNodes.length > 0) {
-      Array.from(splitNodes).forEach((splitNode) => {
-        const splitAmount = parseFloat(splitNode.getAttribute('amount') || '0');
-        let splitCatKey = splitNode.getAttribute('category')
-          ? parseInt(splitNode.getAttribute('category')!, 10)
-          : mainCategoryKey;
-        if (!splitCatKey && payeeKey && payeeDefaultCategoryMap.has(payeeKey)) {
-          splitCatKey = payeeDefaultCategoryMap.get(payeeKey);
-        }
-        const splitWording = splitNode.getAttribute('wording') || wording;
+    const scat = node.getAttribute('scat');
+    const samt = node.getAttribute('samt');
+    const smem = node.getAttribute('smem');
+    
+    let splits: import('./types').OperationSplit[] | undefined = undefined;
 
-        operations.push({
-          date,
-          amount: splitAmount,
-          accountKey,
-          categoryKey: splitCatKey,
-          payeeKey,
-          wording: splitWording,
-          flags,
-          kxfer,
-          isTransfer,
-        });
+    if (scat && samt) {
+      const catArray = scat.split('||');
+      const amtArray = samt.split('||');
+      const memArray = smem ? smem.split('||') : [];
+      
+      splits = amtArray.map((amtStr, idx) => {
+        let catKey = parseInt(catArray[idx] || '0', 10) || undefined;
+        if (!catKey && payeeKey && payeeDefaultCategoryMap.has(payeeKey)) {
+          catKey = payeeDefaultCategoryMap.get(payeeKey);
+        }
+        return {
+          amount: parseFloat(amtStr || '0'),
+          categoryKey: catKey,
+          wording: memArray[idx] || wording
+        };
       });
     } else {
-      operations.push({
-        date,
-        amount: mainAmount,
-        accountKey,
-        categoryKey: mainCategoryKey,
-        payeeKey,
-        wording,
-        flags,
-        kxfer,
-        isTransfer,
-      });
+      const splitNodes = node.getElementsByTagName('split');
+      if (splitNodes.length > 0) {
+        splits = Array.from(splitNodes).map((splitNode) => {
+          let splitCatKey = splitNode.getAttribute('category')
+            ? parseInt(splitNode.getAttribute('category')!, 10)
+            : mainCategoryKey;
+          if (!splitCatKey && payeeKey && payeeDefaultCategoryMap.has(payeeKey)) {
+            splitCatKey = payeeDefaultCategoryMap.get(payeeKey);
+          }
+          return {
+            amount: parseFloat(splitNode.getAttribute('amount') || '0'),
+            categoryKey: splitCatKey,
+            wording: splitNode.getAttribute('wording') || wording
+          };
+        });
+      }
     }
+
+    operations.push({
+      id: `ope-${Math.random().toString(36).substr(2, 9)}-${date.getTime()}`,
+      date,
+      amount: mainAmount,
+      accountKey,
+      categoryKey: mainCategoryKey,
+      payeeKey,
+      wording,
+      flags,
+      kxfer,
+      isTransfer,
+      splits,
+    });
   });
 
   return { categoriesMap, accountsMap, payeesMap, operations };
@@ -241,81 +256,95 @@ export function calculateCategorySummaries(
     if (startDate && op.date < startDate) return;
     if (endDate && op.date > endDate) return;
 
-    const catObj = op.categoryKey ? categoriesMap.get(op.categoryKey) : undefined;
-    // In HomeBank XML, category flag bit 1 (value 2) is GF_INCOME
-    const isIncomeCategory = catObj ? ((catObj.flags || 0) & 2) !== 0 : false;
+    const processItem = (
+      amount: number,
+      categoryKey: number | undefined,
+      wording: string | undefined
+    ) => {
+      const catObj = categoryKey ? categoriesMap.get(categoryKey) : undefined;
+      // In HomeBank XML, category flag bit 1 (value 2) is GF_INCOME
+      const isIncomeCategory = catObj ? ((catObj.flags || 0) & 2) !== 0 : false;
 
-    let include = false;
-    let netAmount = 0;
+      let include = false;
+      let netAmount = 0;
 
-    if (mode === 'expenses') {
-      // Process negative amounts (expenses) or positive amounts on expense categories (refunds)
-      if (op.amount < 0 || (op.amount > 0 && !isIncomeCategory && op.categoryKey)) {
+      if (mode === 'expenses') {
+        // Process negative amounts (expenses) or positive amounts on expense categories (refunds)
+        if (amount < 0 || (amount > 0 && !isIncomeCategory && categoryKey)) {
+          include = true;
+          netAmount = amount < 0 ? Math.abs(amount) : -amount;
+        }
+      } else if (mode === 'incomes') {
+        // Process positive amounts (incomes) or negative amounts on income categories (adjustments)
+        if (amount > 0 || (amount < 0 && isIncomeCategory && categoryKey)) {
+          include = true;
+          netAmount = amount > 0 ? amount : amount;
+        }
+      } else {
+        // 'all'
         include = true;
-        netAmount = op.amount < 0 ? Math.abs(op.amount) : -op.amount;
+        netAmount = Math.abs(amount);
       }
-    } else if (mode === 'incomes') {
-      // Process positive amounts (incomes) or negative amounts on income categories (adjustments)
-      if (op.amount > 0 || (op.amount < 0 && isIncomeCategory && op.categoryKey)) {
-        include = true;
-        netAmount = op.amount > 0 ? op.amount : op.amount;
+
+      if (!include) return;
+
+      const { rootCategory, subcategoryName, subcategoryKey } = getCategoryHierarchy(
+        categoryKey,
+        categoriesMap
+      );
+
+      grandTotal += netAmount;
+
+      const parentCatId = rootCategory.key;
+
+      if (!summaryMap.has(parentCatId)) {
+        summaryMap.set(parentCatId, {
+          total: 0,
+          subcategories: new Map(),
+          operations: [],
+        });
       }
-    } else {
-      // 'all'
-      include = true;
-      netAmount = Math.abs(op.amount);
-    }
 
-    if (!include) return;
+      const item = summaryMap.get(parentCatId)!;
+      item.total += netAmount;
 
-    const { rootCategory, subcategoryName, subcategoryKey } = getCategoryHierarchy(
-      op.categoryKey,
-      categoriesMap
-    );
-
-    grandTotal += netAmount;
-
-    const parentCatId = rootCategory.key;
-
-    if (!summaryMap.has(parentCatId)) {
-      summaryMap.set(parentCatId, {
+      // Track subcategory
+      const subData = item.subcategories.get(subcategoryKey) || {
+        name: subcategoryName,
+        key: subcategoryKey,
         total: 0,
-        subcategories: new Map(),
-        operations: [],
+        count: 0,
+      };
+      item.subcategories.set(subcategoryKey, {
+        name: subcategoryName,
+        key: subcategoryKey,
+        total: subData.total + netAmount,
+        count: subData.count + 1,
       });
+
+      const detailedOp: DetailedOperation = {
+        date: op.date,
+        amount: Math.abs(amount),
+        rawAmount: amount,
+        accountName: op.accountKey ? accountsMap.get(op.accountKey)?.name : undefined,
+        categoryName: rootCategory.name,
+        subcategoryName,
+        payeeName: op.payeeKey ? payeesMap.get(op.payeeKey)?.name : undefined,
+        wording: wording,
+        categoryKey: rootCategory.key,
+        subcategoryKey,
+      };
+
+      item.operations.push(detailedOp);
+    };
+
+    if (op.splits && op.splits.length > 0) {
+      op.splits.forEach(split => {
+        processItem(split.amount, split.categoryKey, split.wording || op.wording);
+      });
+    } else {
+      processItem(op.amount, op.categoryKey, op.wording);
     }
-
-    const item = summaryMap.get(parentCatId)!;
-    item.total += netAmount;
-
-    // Track subcategory
-    const subData = item.subcategories.get(subcategoryKey) || {
-      name: subcategoryName,
-      key: subcategoryKey,
-      total: 0,
-      count: 0,
-    };
-    item.subcategories.set(subcategoryKey, {
-      name: subcategoryName,
-      key: subcategoryKey,
-      total: subData.total + netAmount,
-      count: subData.count + 1,
-    });
-
-    const detailedOp: DetailedOperation = {
-      date: op.date,
-      amount: Math.abs(op.amount),
-      rawAmount: op.amount,
-      accountName: op.accountKey ? accountsMap.get(op.accountKey)?.name : undefined,
-      categoryName: rootCategory.name,
-      subcategoryName,
-      payeeName: op.payeeKey ? payeesMap.get(op.payeeKey)?.name : undefined,
-      wording: op.wording,
-      categoryKey: rootCategory.key,
-      subcategoryKey,
-    };
-
-    item.operations.push(detailedOp);
   });
 
   const result: CategorySummary[] = [];

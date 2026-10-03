@@ -1,4 +1,19 @@
 import React, { useState, useMemo } from 'react';
+import {
+  PieChart as RechartsPieChart,
+  Pie,
+  Cell,
+  Tooltip as RechartsTooltip,
+  Legend,
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  ResponsiveContainer,
+} from 'recharts';
 import { parseHomeBankXML, calculateAllCategoryExpenses } from './xmlParser';
 import { Category, Account, Payee, Operation, PresetPeriod } from './types';
 import {
@@ -22,6 +37,13 @@ import {
   Layers,
   FileCheck,
   FilterX,
+  Menu,
+  X,
+  Landmark,
+  Home,
+  List,
+  BarChart3,
+  ArrowLeft,
 } from 'lucide-react';
 
 function formatDateForInput(d: Date): string {
@@ -42,7 +64,8 @@ function getPresetDates(
 
   if (preset === 'current_month') {
     const start = new Date(year, month, 1);
-    const end = new Date(year, month + 1, 0);
+    // Cria o dia 0 do mês seguinte (último dia do mês atual) às 12:00 para evitar roll-over por fuso
+    const end = new Date(year, month + 1, 0, 12, 0, 0);
     return { start: formatDateForInput(start), end: formatDateForInput(end) };
   }
 
@@ -102,7 +125,13 @@ export default function App() {
     Record<number, number | null>
   >({});
 
-  // Handle XML / XDB File Upload
+  // Navigation states
+  const [activeView, setActiveView] = useState<'dashboard' | 'accounts'>('dashboard');
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [selectedAccountKey, setSelectedAccountKey] = useState<number | null>(null);
+  const [expandedSplits, setExpandedSplits] = useState<Set<string>>(new Set());
+
+  // Handle XML / XHB File Upload
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -122,6 +151,7 @@ export default function App() {
         setEndDateStr('');
         setExpandedCategoryKeys(new Set());
         setSelectedSubcategoryKeys({});
+        setExpandedSplits(new Set());
       }
     };
     reader.readAsText(file);
@@ -294,13 +324,97 @@ export default function App() {
       <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-indigo-600/10 rounded-full blur-[140px] pointer-events-none -z-10"></div>
       <div className="absolute top-1/3 right-10 w-[450px] h-[450px] bg-teal-500/10 rounded-full blur-[130px] pointer-events-none -z-10"></div>
 
+      {/* Sidebar Navigation Drawer */}
+      {parsedData && (
+        <>
+          {/* Overlay */}
+          <div
+            className={`fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-40 transition-opacity duration-300 ${
+              isMenuOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
+            }`}
+            onClick={() => setIsMenuOpen(false)}
+          ></div>
+
+          {/* Drawer */}
+          <div
+            className={`fixed top-0 left-0 h-full w-72 bg-slate-900 border-r border-slate-800 z-50 transform transition-transform duration-300 ease-in-out ${
+              isMenuOpen ? 'translate-x-0' : '-translate-x-full'
+            } shadow-2xl flex flex-col`}
+          >
+            <div className="p-5 flex items-center justify-between border-b border-slate-800/80">
+              <div className="flex items-center gap-2">
+                <PieChart className="w-5 h-5 text-indigo-400" />
+                <span className="font-bold text-white tracking-wide text-sm">HomeBank Menu</span>
+              </div>
+              <button
+                onClick={() => setIsMenuOpen(false)}
+                className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              <button
+                onClick={() => {
+                  setActiveView('dashboard');
+                  setIsMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition ${
+                  activeView === 'dashboard'
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <Home className="w-5 h-5" />
+                Dashboard Geral
+              </button>
+              <button
+                onClick={() => {
+                  setActiveView('accounts');
+                  setIsMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition ${
+                  activeView === 'accounts'
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <Landmark className="w-5 h-5" />
+                Contas e Extratos
+              </button>
+            </div>
+            <div className="p-4 border-t border-slate-800 text-xs text-slate-500 text-center">
+              Minhas Finanças Clone v1.0
+            </div>
+          </div>
+        </>
+      )}
+
       {/* Header Bar */}
       <header className="sticky top-0 z-30 bg-slate-950/80 backdrop-blur-xl border-b border-slate-800/80 px-4 md:px-8 py-4">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-gradient-to-tr from-indigo-600 to-blue-500 rounded-2xl shadow-lg shadow-indigo-500/25">
+            {parsedData && (
+              <button
+                onClick={() => setIsMenuOpen(true)}
+                className="p-2.5 mr-1 md:hidden bg-slate-900 border border-slate-800 hover:bg-slate-800 rounded-xl text-slate-300 transition"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+            )}
+            
+            <div className="hidden md:flex p-2.5 bg-gradient-to-tr from-indigo-600 to-blue-500 rounded-2xl shadow-lg shadow-indigo-500/25 items-center justify-center">
               <PieChart className="w-6 h-6 text-white" />
             </div>
+            
+            {parsedData && (
+              <button
+                onClick={() => setIsMenuOpen(true)}
+                className="hidden md:flex p-2.5 mr-1 bg-slate-900 border border-slate-800 hover:bg-slate-800 rounded-xl text-slate-300 transition"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+            )}
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-2xl font-extrabold bg-gradient-to-r from-white via-slate-100 to-indigo-200 bg-clip-text text-transparent">
@@ -331,8 +445,8 @@ export default function App() {
 
               <label className="flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-medium px-4 py-2 rounded-xl cursor-pointer shadow-lg shadow-indigo-500/20 transition text-xs">
                 <UploadCloud className="w-4 h-4" />
-                Trocar Arquivo (.xdb)
-                <input type="file" accept=".xdb,.xml" onChange={handleFileUpload} className="hidden" />
+                Trocar Arquivo (.xhb)
+                <input type="file" accept=".xhb,.xml" onChange={handleFileUpload} className="hidden" />
               </label>
             </div>
           ) : null}
@@ -354,14 +468,14 @@ export default function App() {
                 Importe seu arquivo do HomeBank
               </h2>
               <p className="text-slate-400 text-sm max-w-lg mx-auto mb-8 leading-relaxed">
-                Carregue seu arquivo <code className="text-indigo-300 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono text-xs">.xdb</code> ou <code className="text-indigo-300 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono text-xs">.xml</code> para desbloquear a análise de 100% dos seus gastos, filtro completo por intervalo de datas e detalhamento de cada item comprado.
+                Carregue seu arquivo <code className="text-indigo-300 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono text-xs">.xhb</code> ou <code className="text-indigo-300 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono text-xs">.xml</code> para desbloquear a análise de 100% dos seus gastos, filtro completo por intervalo de datas e detalhamento de cada item comprado.
               </p>
 
               <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
                 <label className="w-full sm:w-auto bg-gradient-to-r from-indigo-600 via-blue-600 to-teal-500 hover:from-indigo-500 hover:to-teal-400 text-white font-semibold px-8 py-3.5 rounded-2xl cursor-pointer shadow-xl shadow-indigo-500/25 transition transform active:scale-95 flex items-center justify-center gap-2">
                   <UploadCloud className="w-5 h-5" />
-                  Selecionar Arquivo .xdb / .xml
-                  <input type="file" accept=".xdb,.xml" onChange={handleFileUpload} className="hidden" />
+                  Selecionar Arquivo .xhb / .xml
+                  <input type="file" accept=".xhb,.xml" onChange={handleFileUpload} className="hidden" />
                 </label>
               </div>
 
@@ -390,7 +504,7 @@ export default function App() {
               </div>
             </div>
           </div>
-        ) : (
+        ) : activeView === 'dashboard' ? (
           <div className="space-y-8">
             {/* Control Panel: Date Interval & Quick Presets */}
             <div className="glass-card border border-slate-800/80 rounded-3xl p-6 shadow-2xl">
@@ -976,6 +1090,274 @@ export default function App() {
                   })}
                 </div>
               )}
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-8">
+            <div className="glass-card border border-slate-800/80 rounded-3xl p-6 md:p-8 shadow-2xl">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6 pb-5 border-b border-slate-800/80">
+                <div>
+                  <h2 className="text-xl font-extrabold text-white flex items-center gap-2.5">
+                    <Landmark className="w-6 h-6 text-indigo-400" />
+                    Contas e Extratos
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Selecione uma conta para ver o saldo e as movimentações.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <div className="col-span-1 space-y-3">
+                  <h3 className="text-[11px] font-extrabold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 mb-3">
+                    <List className="w-4 h-4 text-indigo-400" />
+                    Suas Contas
+                  </h3>
+                  {Array.from(parsedData.accountsMap.values()).map(acc => {
+                    const accOps = parsedData.operations.filter(op => op.accountKey === acc.key);
+                    const currentBalance = acc.initial + accOps.reduce((sum, op) => sum + op.amount, 0);
+
+                    return (
+                      <button
+                        key={acc.key}
+                        onClick={() => setSelectedAccountKey(acc.key)}
+                        className={`w-full text-left p-4 rounded-2xl border transition-all ${
+                          selectedAccountKey === acc.key
+                            ? 'bg-indigo-600/20 border-indigo-500/60 shadow-lg shadow-indigo-500/10'
+                            : 'bg-slate-900/50 hover:bg-slate-900 border-slate-800/60'
+                        }`}
+                      >
+                        <div className="font-bold text-slate-200 text-sm mb-1">{acc.name}</div>
+                        <div className={`text-xs font-bold ${currentBalance >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {currentBalance.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="col-span-1 md:col-span-3">
+                  {selectedAccountKey === null ? (
+                    <div className="text-center py-16 text-slate-500 text-sm bg-slate-900/30 rounded-3xl border border-slate-800/50">
+                      Selecione uma conta ao lado para visualizar o extrato detalhado.
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {(() => {
+                        const account = parsedData.accountsMap.get(selectedAccountKey);
+                        const accountOps = parsedData.operations
+                          .filter(op => op.accountKey === selectedAccountKey)
+                          .sort((a, b) => b.date.getTime() - a.date.getTime()); // newest first
+                        
+                        return (
+                          <>
+                            <div className="flex justify-between items-center bg-slate-900/50 p-4 rounded-2xl border border-slate-800/60">
+                              <span className="text-sm font-bold text-slate-200">Extrato: {account?.name}</span>
+                              <span className="text-xs bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-3 py-1 rounded-full font-medium">
+                                {accountOps.length} transações registradas
+                              </span>
+                            </div>
+
+                            <div className="mt-4">
+                              {accountOps.length === 0 ? (
+                                <div className="py-8 text-center text-slate-500 bg-slate-900/30 rounded-2xl border border-slate-800/50">
+                                  Nenhuma movimentação nesta conta.
+                                </div>
+                              ) : (
+                                (() => {
+                                  const groupedOps = accountOps.reduce((acc, op) => {
+                                    // Local date string to avoid timezone issues
+                                    const y = op.date.getFullYear();
+                                    const m = String(op.date.getMonth() + 1).padStart(2, '0');
+                                    const d = String(op.date.getDate()).padStart(2, '0');
+                                    const dateKey = `${y}-${m}-${d}`;
+                                    if (!acc[dateKey]) acc[dateKey] = [];
+                                    acc[dateKey].push(op);
+                                    return acc;
+                                  }, {} as Record<string, typeof accountOps>);
+
+                                  const sortedDates = Object.keys(groupedOps).sort((a, b) => b.localeCompare(a));
+
+                                  return (
+                                    <div className="space-y-8">
+                                      {sortedDates.map((dateStr) => {
+                                        const ops = groupedOps[dateStr];
+                                        const [year, month, day] = dateStr.split('-');
+                                        const dateObj = new Date(Number(year), Number(month) - 1, Number(day));
+                                        const dayName = dateObj.toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '');
+                                        const monthName = dateObj.toLocaleDateString('pt-BR', { month: 'long' });
+                                        
+                                        const dailyTotal = ops.reduce((sum, o) => sum + o.amount, 0);
+
+                                        return (
+                                          <div key={dateStr} className="relative">
+                                            {/* Date Header */}
+                                            <div className="sticky top-20 z-10 bg-slate-950/95 py-2 backdrop-blur-md border-y border-slate-800/80 mb-4 px-4 flex justify-between items-center rounded-xl">
+                                              <div className="flex items-center gap-3">
+                                                <span className="text-2xl font-black text-slate-100">{day}</span>
+                                                <div className="flex flex-col">
+                                                  <span className="text-[10px] uppercase font-bold text-slate-500">{dayName}</span>
+                                                  <span className="text-[10px] uppercase font-bold text-slate-400">{monthName.substring(0, 3)}, {year}</span>
+                                                </div>
+                                              </div>
+                                              <div className={`text-xs font-bold ${dailyTotal >= 0 ? 'text-emerald-500/80' : 'text-slate-500'}`}>
+                                                {dailyTotal >= 0 ? '+' : ''}{dailyTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                              </div>
+                                            </div>
+
+                                            {/* Timeline Items */}
+                                            <div className="space-y-3 px-2 sm:px-4 pl-10 sm:pl-12 relative">
+                                              {/* Vertical Line */}
+                                              <div className="absolute left-4 sm:left-6 top-4 bottom-4 w-px bg-slate-800/80 rounded-full" />
+                                              
+                                              {ops.map((op, idx) => {
+                                                const cat = op.categoryKey ? parsedData.categoriesMap.get(op.categoryKey) : null;
+                                                const isIncome = op.amount >= 0;
+                                                const isTransfer = op.isTransfer;
+                                                
+                                                let transferText = '';
+                                                if (isTransfer) {
+                                                  // Find counter operation
+                                                  const counterOp = parsedData.operations.find(o => 
+                                                    o !== op && 
+                                                    o.isTransfer && 
+                                                    o.date.getTime() === op.date.getTime() && 
+                                                    (o.amount === -op.amount || Math.abs(o.amount - -op.amount) < 0.01)
+                                                  );
+                                                  if (counterOp) {
+                                                    const counterAcc = parsedData.accountsMap.get(counterOp.accountKey)?.name;
+                                                    if (counterAcc) {
+                                                      transferText = isIncome ? `De: ${counterAcc}` : `Para: ${counterAcc}`;
+                                                    }
+                                                  }
+                                                }
+
+                                                const dotColor = isTransfer 
+                                                  ? 'bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.5)] border-slate-950' 
+                                                  : isIncome 
+                                                    ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)] border-slate-950' 
+                                                    : 'bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.5)] border-slate-950';
+                                                
+                                                const textColor = isTransfer
+                                                  ? 'text-blue-400'
+                                                  : isIncome
+                                                    ? 'text-emerald-400'
+                                                    : 'text-slate-100';
+
+                                                const hasSplits = op.splits && op.splits.length > 0;
+                                                const isExpanded = expandedSplits.has(op.id);
+
+                                                return (
+                                                  <div key={idx} className="relative bg-slate-900/40 p-3.5 sm:p-4 rounded-2xl border border-slate-800/60 flex flex-col hover:bg-slate-900/80 transition-colors group shadow-sm">
+                                                    {/* Timeline Dot */}
+                                                    <div className={`absolute -left-7 sm:-left-7 top-6 w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full border-[2.5px] z-10 ${dotColor}`}>
+                                                    </div>
+                                                    
+                                                    {/* Main Row */}
+                                                    <div className={`flex justify-between items-center ${hasSplits ? 'cursor-pointer' : ''}`} onClick={() => {
+                                                      if (hasSplits) {
+                                                        setExpandedSplits(prev => {
+                                                          const next = new Set(prev);
+                                                          if (next.has(op.id)) next.delete(op.id);
+                                                          else next.add(op.id);
+                                                          return next;
+                                                        });
+                                                      }
+                                                    }}>
+                                                      {/* Content */}
+                                                      <div className="flex-1 min-w-0 pr-3 sm:pr-4">
+                                                        <div className="font-bold text-slate-200 truncate text-sm">
+                                                          {op.wording || (isTransfer ? 'Transferência' : 'Sem descrição')}
+                                                        </div>
+                                                        <div className="flex items-center gap-1.5 sm:gap-2 mt-1.5 text-[10px] sm:text-[11px]">
+                                                          {isTransfer ? (
+                                                            <span className="text-blue-300 font-medium truncate max-w-[200px] sm:max-w-[250px] bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
+                                                              {transferText || 'Transferência Interna'}
+                                                            </span>
+                                                          ) : hasSplits ? (
+                                                            <>
+                                                              <span className="text-indigo-400 font-bold bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20 flex items-center gap-1">
+                                                                <Layers className="w-3 h-3" />
+                                                                Múltiplas ({op.splits!.length})
+                                                              </span>
+                                                              {op.payeeKey && (
+                                                                <>
+                                                                  <span className="text-slate-700">•</span>
+                                                                  <span className="text-slate-500 truncate max-w-[100px] sm:max-w-[140px]">
+                                                                    {parsedData.payeesMap.get(op.payeeKey)?.name}
+                                                                  </span>
+                                                                </>
+                                                              )}
+                                                            </>
+                                                          ) : (
+                                                            <>
+                                                              <span className="text-slate-400 font-medium truncate max-w-[100px] sm:max-w-[140px]">
+                                                                {cat ? cat.name : 'Sem categoria'}
+                                                              </span>
+                                                              {op.payeeKey && (
+                                                                <>
+                                                                  <span className="text-slate-700">•</span>
+                                                                  <span className="text-slate-500 truncate max-w-[100px] sm:max-w-[140px]">
+                                                                    {parsedData.payeesMap.get(op.payeeKey)?.name}
+                                                                  </span>
+                                                                </>
+                                                              )}
+                                                            </>
+                                                          )}
+                                                        </div>
+                                                      </div>
+
+                                                      {/* Amount & Expand Icon */}
+                                                      <div className="flex items-center gap-3">
+                                                        <div className={`text-right font-bold whitespace-nowrap font-mono text-sm sm:text-base tracking-tight ${textColor}`}>
+                                                          {isIncome && !isTransfer ? '+' : ''}{op.amount.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                                        </div>
+                                                        {hasSplits && (
+                                                          <div className="p-1 rounded-md bg-slate-800 text-slate-400">
+                                                            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                                          </div>
+                                                        )}
+                                                      </div>
+                                                    </div>
+
+                                                    {/* Expanded Splits View */}
+                                                    {hasSplits && isExpanded && (
+                                                      <div className="mt-4 pt-4 border-t border-slate-800/80 space-y-2">
+                                                        {op.splits!.map((split, sIdx) => {
+                                                          const sCat = split.categoryKey ? parsedData.categoriesMap.get(split.categoryKey) : null;
+                                                          return (
+                                                            <div key={sIdx} className="flex justify-between items-center text-xs p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/50">
+                                                              <div className="flex-1 min-w-0 pr-3">
+                                                                <div className="text-slate-300 font-medium truncate">{split.wording || op.wording || 'Sem descrição'}</div>
+                                                                <div className="text-slate-500 text-[10px] mt-0.5">{sCat ? sCat.name : 'Sem categoria'}</div>
+                                                              </div>
+                                                              <div className="font-mono text-slate-400 font-bold">
+                                                                {split.amount.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                                              </div>
+                                                            </div>
+                                                          );
+                                                        })}
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  );
+                                })()
+                              )}
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}

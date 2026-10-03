@@ -17,7 +17,14 @@ export interface Payee {
   name: string;
 }
 
+export interface OperationSplit {
+  amount: number;
+  categoryKey?: number;
+  wording?: string;
+}
+
 export interface Operation {
+  id: string;
   date: Date;
   amount: number;
   accountKey: number;
@@ -27,6 +34,7 @@ export interface Operation {
   flags?: number;
   kxfer?: number;
   isTransfer?: boolean;
+  splits?: OperationSplit[];
 }
 
 export interface DetailedOperation {
