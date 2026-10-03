@@ -1,6 +1,6 @@
 # HomeBank Insights
 
-Aplicação web interativa para análise e agrupamento **completo (100%)** de categorias de arquivos do **HomeBank** (`.xdb` / `.xml`).
+Aplicação web interativa para análise e agrupamento **completo (100%)** de categorias de arquivos do **HomeBank** (`.xhb` / `.xml`).
 
 ## 🚀 Como Executar
 

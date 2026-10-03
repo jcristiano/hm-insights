@@ -1,19 +1,4 @@
 import React, { useState, useMemo } from 'react';
-import {
-  PieChart as RechartsPieChart,
-  Pie,
-  Cell,
-  Tooltip as RechartsTooltip,
-  Legend,
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  ResponsiveContainer,
-} from 'recharts';
 import { parseHomeBankXML, calculateAllCategoryExpenses } from './xmlParser';
 import { Category, Account, Payee, Operation, PresetPeriod } from './types';
 import {
@@ -41,9 +26,7 @@ import {
   X,
   Landmark,
   Home,
-  List,
-  BarChart3,
-  ArrowLeft,
+  List
 } from 'lucide-react';
 
 function formatDateForInput(d: Date): string {
