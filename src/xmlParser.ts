@@ -88,7 +88,7 @@ export function parseHomeBankXML(xmlText: string) {
   // Pass 2: Extract operations
   const operations: Operation[] = [];
 
-  Array.from(opeNodes).forEach((node) => {
+  Array.from(opeNodes).forEach((node, opIndex) => {
     const date = parseHomeBankDate(node.getAttribute('date') || '0');
     const mainAmount = parseFloat(node.getAttribute('amount') || '0');
     const accountKey = parseInt(node.getAttribute('account') || '0', 10);
@@ -157,6 +157,7 @@ export function parseHomeBankXML(xmlText: string) {
 
     operations.push({
       id: `ope-${Math.random().toString(36).substr(2, 9)}-${date.getTime()}`,
+      order: opIndex,
       date,
       amount: mainAmount,
       accountKey,
@@ -323,6 +324,7 @@ export function calculateCategorySummaries(
       });
 
       const detailedOp: DetailedOperation = {
+        order: op.order,
         date: op.date,
         amount: Math.abs(amount),
         rawAmount: amount,

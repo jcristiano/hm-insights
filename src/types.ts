@@ -25,6 +25,7 @@ export interface OperationSplit {
 
 export interface Operation {
   id: string;
+  order: number;
   date: Date;
   amount: number;
   accountKey: number;
@@ -38,6 +39,7 @@ export interface Operation {
 }
 
 export interface DetailedOperation {
+  order: number;
   date: Date;
   amount: number;
   rawAmount?: number;
@@ -77,4 +79,13 @@ export type PresetPeriod =
   | 'current_semester'
   | 'current_year'
   | 'custom';
+
+export interface ItemQuantityInfo {
+  quantity: number;
+  cleanName: string;
+  unitPrice: number;
+  totalPrice: number;
+}
+
+export type { SortOrder, UserPreferences } from './preferences';
 

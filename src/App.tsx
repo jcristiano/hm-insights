@@ -1,6 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { parseHomeBankXML, calculateAllCategoryExpenses } from './xmlParser';
-import { Category, Account, Payee, Operation, PresetPeriod } from './types';
+import { Category, Account, Payee, Operation, PresetPeriod, UserPreferences } from './types';
+import { loadUserPreferences, saveUserPreferences } from './preferences';
+import { parseItemQuantity } from './quantityParser';
 import {
   UploadCloud,
   PieChart,
@@ -26,7 +28,11 @@ import {
   X,
   Landmark,
   Home,
-  List
+  List,
+  ArrowDownUp,
+  ArrowUp,
+  ArrowDown,
+  Box
 } from 'lucide-react';
 
 function formatDateForInput(d: Date): string {
@@ -113,6 +119,23 @@ export default function App() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [selectedAccountKey, setSelectedAccountKey] = useState<number | null>(null);
   const [expandedSplits, setExpandedSplits] = useState<Set<string>>(new Set());
+
+  // User Preferences (saved in LocalStorage)
+  const [preferences, setPreferences] = useState<UserPreferences>(() => loadUserPreferences());
+
+  const updatePreferences = (newPrefs: Partial<UserPreferences>) => {
+    setPreferences((prev) => {
+      const updated = { ...prev, ...newPrefs };
+      saveUserPreferences(updated);
+      return updated;
+    });
+  };
+
+  const toggleSortOrder = () => {
+    updatePreferences({
+      operationsSortOrder: preferences.operationsSortOrder === 'desc' ? 'asc' : 'desc',
+    });
+  };
 
   // Handle XML / XHB File Upload
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -789,7 +812,7 @@ export default function App() {
                 </div>
 
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       onClick={expandAll}
                       className="text-xs font-semibold text-slate-300 hover:text-white bg-slate-950 hover:bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-xl transition"
@@ -801,6 +824,17 @@ export default function App() {
                       className="text-xs font-semibold text-slate-300 hover:text-white bg-slate-950 hover:bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-xl transition"
                     >
                       Recolher Todos
+                    </button>
+                    <button
+                      onClick={toggleSortOrder}
+                      title={`Clique para ordenar por data: ${preferences.operationsSortOrder === 'desc' ? 'Mais recente primeiro' : 'Mais antigo primeiro'}`}
+                      className="text-xs font-semibold text-slate-200 hover:text-white bg-slate-950 hover:bg-slate-900 border border-slate-800 hover:border-indigo-500/50 px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm"
+                    >
+                      <ArrowDownUp className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Data:</span>
+                      <span className="text-indigo-400 font-bold">
+                        {preferences.operationsSortOrder === 'desc' ? 'Mais recentes' : 'Mais antigos'}
+                      </span>
                     </button>
                   </div>
 
@@ -826,13 +860,24 @@ export default function App() {
                   {filteredCategories.map((cat) => {
                     const isExpanded = expandedCategoryKeys.has(cat.key);
                     const activeSubKey = selectedSubcategoryKeys[cat.key] ?? null;
-
-                    const displayedOperations = cat.operations.filter((op) => {
-                      if (activeSubKey !== null && op.subcategoryKey !== activeSubKey) {
-                        return false;
-                      }
-                      return true;
-                    });
+                    const isAsc = preferences.operationsSortOrder === 'asc';
+                    const displayedOperations = cat.operations
+                      .filter((op) => {
+                        if (activeSubKey !== null && op.subcategoryKey !== activeSubKey) {
+                          return false;
+                        }
+                        return true;
+                      })
+                      .slice()
+                      .sort((a, b) => {
+                        const dateDiff = b.date.getTime() - a.date.getTime();
+                        if (dateDiff !== 0) {
+                          return isAsc ? -dateDiff : dateDiff;
+                        }
+                        // Mesma data: item mais recente no arquivo fica no topo se 'desc', ou no final se 'asc'
+                        const orderDiff = (b.order ?? 0) - (a.order ?? 0);
+                        return isAsc ? -orderDiff : orderDiff;
+                      });
 
                     return (
                       <div
@@ -1003,7 +1048,20 @@ export default function App() {
                                 <table className="w-full text-left text-xs">
                                   <thead className="bg-slate-900/90 text-slate-400 border-b border-slate-800">
                                     <tr>
-                                      <th className="py-3.5 px-4 font-semibold">Data</th>
+                                      <th
+                                        onClick={toggleSortOrder}
+                                        className="py-3.5 px-4 font-semibold cursor-pointer select-none hover:text-white transition group"
+                                        title={`Ordenar por data (${preferences.operationsSortOrder === 'desc' ? 'Mais recente primeiro' : 'Mais antigo primeiro'})`}
+                                      >
+                                        <div className="flex items-center gap-1.5">
+                                          <span>Data</span>
+                                          {preferences.operationsSortOrder === 'desc' ? (
+                                            <ArrowDown className="w-3.5 h-3.5 text-indigo-400 group-hover:scale-110 transition" />
+                                          ) : (
+                                            <ArrowUp className="w-3.5 h-3.5 text-indigo-400 group-hover:scale-110 transition" />
+                                          )}
+                                        </div>
+                                      </th>
                                       <th className="py-3.5 px-4 font-semibold">O que comprou (Descrição)</th>
                                       <th className="py-3.5 px-4 font-semibold">Beneficiário / Loja</th>
                                       <th className="py-3.5 px-4 font-semibold">Subcategoria</th>
@@ -1128,17 +1186,36 @@ export default function App() {
                     <div className="space-y-4">
                       {(() => {
                         const account = parsedData.accountsMap.get(selectedAccountKey);
+                        const isAsc = preferences.operationsSortOrder === 'asc';
                         const accountOps = parsedData.operations
                           .filter(op => op.accountKey === selectedAccountKey)
-                          .sort((a, b) => b.date.getTime() - a.date.getTime()); // newest first
+                          .sort((a, b) => {
+                            const dateDiff = b.date.getTime() - a.date.getTime();
+                            if (dateDiff !== 0) {
+                              return isAsc ? -dateDiff : dateDiff;
+                            }
+                            // Mesma data: desempate pela ordem de inserção no arquivo (.order)
+                            const orderDiff = (b.order ?? 0) - (a.order ?? 0);
+                            return isAsc ? -orderDiff : orderDiff;
+                          });
                         
                         return (
                           <>
-                            <div className="flex justify-between items-center bg-slate-900/50 p-4 rounded-2xl border border-slate-800/60">
+                            <div className="flex flex-wrap justify-between items-center gap-3 bg-slate-900/50 p-4 rounded-2xl border border-slate-800/60">
                               <span className="text-sm font-bold text-slate-200">Extrato: {account?.name}</span>
-                              <span className="text-xs bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-3 py-1 rounded-full font-medium">
-                                {accountOps.length} transações registradas
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-3 py-1 rounded-full font-medium">
+                                  {accountOps.length} transações registradas
+                                </span>
+                                <button
+                                  onClick={toggleSortOrder}
+                                  title={`Clique para ordenar: ${isAsc ? 'Mais antigo primeiro' : 'Mais recente primeiro'}`}
+                                  className="text-xs font-semibold text-slate-200 hover:text-white bg-slate-950 hover:bg-slate-900 border border-slate-800 px-3 py-1 rounded-full transition flex items-center gap-1.5"
+                                >
+                                  <ArrowDownUp className="w-3 h-3 text-indigo-400" />
+                                  <span>{isAsc ? 'Mais antigos' : 'Mais recentes'}</span>
+                                </button>
+                              </div>
                             </div>
 
                             <div className="mt-4">
@@ -1159,7 +1236,9 @@ export default function App() {
                                     return acc;
                                   }, {} as Record<string, typeof accountOps>);
 
-                                  const sortedDates = Object.keys(groupedOps).sort((a, b) => b.localeCompare(a));
+                                  const sortedDates = Object.keys(groupedOps).sort((a, b) =>
+                                    isAsc ? a.localeCompare(b) : b.localeCompare(a)
+                                  );
 
                                   return (
                                     <div className="space-y-8">
