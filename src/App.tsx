@@ -31,6 +31,9 @@ import {
   ArrowDownUp,
   ArrowUp,
   ArrowDown,
+  Download,
+  FileText,
+  Printer,
 } from 'lucide-react';
 import {
   BarChart,
@@ -174,7 +177,9 @@ export default function App() {
   >({});
 
   // Navigation states
-  const [activeView, setActiveView] = useState<'dashboard' | 'analysis' | 'accounts' | 'payees'>('dashboard');
+  const [activeView, setActiveView] = useState<
+    'dashboard' | 'analysis' | 'accounts' | 'payees' | 'report'
+  >('dashboard');
   const [analysisCategoryKey, setAnalysisCategoryKey] = useState<number | null>(null);
   const [analysisSubcategoryKey, setAnalysisSubcategoryKey] = useState<number | null>(null);
   const [payeeSearchFilter, setPayeeSearchFilter] = useState('');
@@ -182,6 +187,9 @@ export default function App() {
   const [selectedAccountKey, setSelectedAccountKey] = useState<number | null>(null);
   const [expandedSplits, setExpandedSplits] = useState<Set<string>>(new Set());
   const [expandedPayeeUnits, setExpandedPayeeUnits] = useState<Set<string>>(new Set());
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [isLoadingFile, setIsLoadingFile] = useState(false);
+  const [reportGeneratedAt, setReportGeneratedAt] = useState<Date | null>(null);
 
   // User Preferences (saved in LocalStorage)
   const [preferences, setPreferences] = useState<UserPreferences>(() => loadUserPreferences());
@@ -204,24 +212,47 @@ export default function App() {
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    const extension = file.name.toLowerCase().split('.').pop();
+    if (extension !== 'xhb' && extension !== 'xml') {
+      setFileError('Selecione um arquivo com extensão .xhb ou .xml.');
+      return;
+    }
 
+    setIsLoadingFile(true);
+    setFileError(null);
     const reader = new FileReader();
     reader.onload = (e) => {
-      const xmlContent = e.target?.result as string;
-      if (xmlContent) {
+      try {
+        const xmlContent = e.target?.result;
+        if (typeof xmlContent !== 'string' || !xmlContent.trim()) {
+          throw new Error('O arquivo está vazio ou não pôde ser lido.');
+        }
+
         const data = parseHomeBankXML(xmlContent);
-        setParsedData({
-          fileName: file.name,
-          ...data,
-        });
+        setParsedData({ fileName: file.name, ...data });
+        setFileError(null);
         setActivePreset('all');
         setSelectedYear(null);
         setStartDateStr('');
         setEndDateStr('');
+        setSelectedTagIds([]);
         setExpandedCategoryKeys(new Set());
         setSelectedSubcategoryKeys({});
         setExpandedSplits(new Set());
+        setExpandedPayeeUnits(new Set());
+        setAnalysisCategoryKey(null);
+        setAnalysisSubcategoryKey(null);
+        setReportGeneratedAt(null);
+      } catch (error) {
+        setParsedData(null);
+        setFileError(error instanceof Error ? error.message : 'Não foi possível processar o arquivo.');
+      } finally {
+        setIsLoadingFile(false);
       }
+    };
+    reader.onerror = () => {
+      setFileError('Não foi possível ler o arquivo selecionado.');
+      setIsLoadingFile(false);
     };
     reader.readAsText(file);
   };
@@ -289,9 +320,14 @@ export default function App() {
     return new Date(parts[0], parts[1] - 1, parts[2], 23, 59, 59);
   }, [endDateStr]);
 
+  const dateRangeError = useMemo(() => {
+    if (!activeStartDate || !activeEndDate || activeStartDate <= activeEndDate) return null;
+    return 'A data inicial não pode ser posterior à data final.';
+  }, [activeEndDate, activeStartDate]);
+
   // Filter operations for overall financial totals (excluding internal transfers) and tag filter
   const filteredOperations = useMemo(() => {
-    if (!parsedData) return [];
+    if (!parsedData || dateRangeError) return [];
     return parsedData.operations.filter((op) => {
       if (op.isTransfer) return false; // Exclude internal transfers between accounts
       if (activeStartDate && op.date < activeStartDate) return false;
@@ -304,7 +340,7 @@ export default function App() {
       }
       return true;
     });
-  }, [parsedData, activeStartDate, activeEndDate, selectedTagIds]);
+  }, [parsedData, activeStartDate, activeEndDate, dateRangeError, selectedTagIds]);
 
   const { totalIncomes, totalExpenses } = useMemo(() => {
     let inc = 0;
@@ -441,6 +477,67 @@ export default function App() {
       .sort((a, b) => b.value - a.value);
   }, [filteredOperations, parsedData]);
 
+  const reportMetrics = useMemo(() => {
+    const expenseOperations = filteredOperations.filter((operation) => operation.amount < 0);
+    const days = new Set(
+      expenseOperations.map((operation) => operation.date.toISOString().slice(0, 10))
+    );
+    const largestExpense = expenseOperations.reduce<Operation | null>(
+      (largest, operation) =>
+        !largest || Math.abs(operation.amount) > Math.abs(largest.amount) ? operation : largest,
+      null
+    );
+    const uncategorizedCount = expenseOperations.filter(
+      (operation) =>
+        !operation.categoryKey && (!operation.splits || operation.splits.length === 0)
+    ).length;
+
+    return {
+      expenseOperations,
+      daysCount: days.size,
+      averageDailyExpense: days.size > 0 ? totalExpenses / days.size : 0,
+      largestExpense,
+      uncategorizedCount,
+    };
+  }, [filteredOperations, totalExpenses]);
+
+  const downloadReport = () => {
+    const escapeCsv = (value: string | number) =>
+      `"${String(value).replace(/"/g, '""')}"`;
+    const rows = [
+      ['Relatório Analítico HomeBank Insights'],
+      ['Arquivo', parsedData?.fileName || ''],
+      ['Gerado em', new Date().toLocaleString('pt-BR')],
+      ['Período inicial', startDateStr || 'Todos'],
+      ['Período final', endDateStr || 'Todos'],
+      [],
+      ['Indicador', 'Valor'],
+      ['Receitas', totalIncomes.toFixed(2)],
+      ['Despesas', totalExpenses.toFixed(2)],
+      ['Saldo', (totalIncomes - totalExpenses).toFixed(2)],
+      ['Média diária de despesas', reportMetrics.averageDailyExpense.toFixed(2)],
+      ['Lançamentos de despesas', reportMetrics.expenseOperations.length],
+      [],
+      ['Categorias', 'Total', 'Percentual'],
+      ...categorySummaries.map((category) => [
+        category.name,
+        category.total.toFixed(2),
+        `${category.percentage.toFixed(2)}%`,
+      ]),
+      [],
+      ['Favorecidos', 'Total', 'Lançamentos'],
+      ...payeeSummaries.map((payee) => [payee.groupName, payee.total.toFixed(2), payee.operationsCount]),
+    ];
+    const csv = rows.map((row) => row.map((value) => escapeCsv(value ?? '')).join(';')).join('\r\n');
+    const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `relatorio-homebank-${formatDateForInput(new Date())}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   const payeeSummaries = useMemo<PayeeSummary[]>(() => {
     const groups = new Map<string, Map<string, PayeeUnitSummary>>();
 
@@ -522,6 +619,13 @@ export default function App() {
     setSelectedYear(null);
     setStartDateStr('');
     setEndDateStr('');
+  };
+
+  const clearAllFilters = () => {
+    clearDateFilters();
+    setSelectedTagIds([]);
+    setSearchFilter('');
+    setPayeeSearchFilter('');
   };
 
   const toggleSubcategoryFilter = (catKey: number, subKey: number) => {
@@ -614,6 +718,21 @@ export default function App() {
               </button>
               <button
                 onClick={() => {
+                  setActiveView('report');
+                  setReportGeneratedAt(new Date());
+                  setIsMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition ${
+                  activeView === 'report'
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <FileText className="w-5 h-5" />
+                Relatório Analítico
+              </button>
+              <button
+                onClick={() => {
                   setActiveView('payees');
                   setIsMenuOpen(false);
                 }}
@@ -635,7 +754,7 @@ export default function App() {
       )}
 
       {/* Header Bar */}
-      <header className="sticky top-0 z-30 bg-slate-950/80 backdrop-blur-xl border-b border-slate-800/80 px-4 md:px-8 py-4">
+      <header className="sticky top-0 z-30 bg-slate-950/80 backdrop-blur-xl border-b border-slate-800/80 px-4 md:px-8 py-4 print:hidden">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div className="flex items-center gap-3">
             {parsedData && (
@@ -698,6 +817,11 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 md:px-8 py-8">
+        {parsedData && dateRangeError && (
+          <div className="mb-6 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+            {dateRangeError} Ajuste o intervalo para visualizar os dados.
+          </div>
+        )}
         {!parsedData ? (
           /* Empty State Landing Screen */
           <div className="max-w-3xl mx-auto my-12">
@@ -711,9 +835,19 @@ export default function App() {
               <h2 className="text-3xl font-extrabold text-white mb-3">
                 Importe seu arquivo do HomeBank
               </h2>
+              {isLoadingFile && (
+                <div className="mb-5 text-sm text-indigo-300 animate-pulse">
+                  Processando o arquivo e preparando os indicadores...
+                </div>
+              )}
               <p className="text-slate-400 text-sm max-w-lg mx-auto mb-8 leading-relaxed">
                 Carregue seu arquivo <code className="text-indigo-300 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono text-xs">.xhb</code> ou <code className="text-indigo-300 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono text-xs">.xml</code> para desbloquear a análise de 100% dos seus gastos, filtro completo por intervalo de datas e detalhamento de cada item comprado.
               </p>
+              {fileError && (
+                <div className="max-w-lg mx-auto mb-6 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-left text-xs text-rose-300">
+                  Não foi possível carregar o arquivo: {fileError}
+                </div>
+              )}
 
               <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
                 <label className="w-full sm:w-auto bg-gradient-to-r from-indigo-600 via-blue-600 to-teal-500 hover:from-indigo-500 hover:to-teal-400 text-white font-semibold px-8 py-3.5 rounded-2xl cursor-pointer shadow-xl shadow-indigo-500/25 transition transform active:scale-95 flex items-center justify-center gap-2">
@@ -826,9 +960,14 @@ export default function App() {
                     />
                   </div>
 
-                  {(startDateStr || endDateStr || activePreset !== 'all' || selectedYear !== null) && (
+                  {(startDateStr ||
+                    endDateStr ||
+                    activePreset !== 'all' ||
+                    selectedYear !== null ||
+                    selectedTagIds.length > 0 ||
+                    searchFilter.trim()) && (
                     <button
-                      onClick={clearDateFilters}
+                      onClick={clearAllFilters}
                       className="ml-auto text-xs text-slate-400 hover:text-rose-400 flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 px-3.5 py-2 rounded-xl transition"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
@@ -918,6 +1057,11 @@ export default function App() {
                     Ano Atual
                   </button>
                 </div>
+                {dateRangeError && (
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-300">
+                    {dateRangeError}
+                  </div>
+                )}
 
                 {/* Years Selector Row */}
 {availableYears.length > 0 && (
@@ -1604,6 +1748,160 @@ export default function App() {
                       <Legend wrapperStyle={{ fontSize: '11px' }} />
                     </RechartsPieChart>
                   </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : activeView === 'report' ? (
+          <div className="space-y-6 print:text-slate-950" id="analytical-report">
+            <div className="glass-card border border-slate-800/80 rounded-3xl p-6 md:p-8 shadow-2xl print:border-slate-300 print:shadow-none">
+              <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-6 pb-5 border-b border-slate-800/80 print:border-slate-300">
+                <div>
+                  <h2 className="text-xl font-extrabold text-white print:text-slate-950 flex items-center gap-2.5">
+                    <FileText className="w-6 h-6 text-indigo-400 print:text-indigo-600" />
+                    Relatório Analítico
+                  </h2>
+                  <p className="text-xs text-slate-400 print:text-slate-600 mt-1">
+                    Síntese dos movimentos financeiros conforme os filtros selecionados.
+                  </p>
+                  {reportGeneratedAt && (
+                    <p className="text-[10px] text-slate-500 print:text-slate-500 mt-1">
+                      Gerado em {reportGeneratedAt.toLocaleString('pt-BR')}
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2 print:hidden">
+                  <button
+                    onClick={() => setReportGeneratedAt(new Date())}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    Gerar novamente
+                  </button>
+                  <button
+                    onClick={downloadReport}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Baixar CSV
+                  </button>
+                  <button
+                    onClick={() => window.print()}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    Imprimir / PDF
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                {[
+                  ['Receitas', totalIncomes, 'text-emerald-400'],
+                  ['Despesas', totalExpenses, 'text-rose-400'],
+                  ['Saldo', totalIncomes - totalExpenses, totalIncomes - totalExpenses >= 0 ? 'text-blue-400' : 'text-rose-400'],
+                  ['Média diária', reportMetrics.averageDailyExpense, 'text-amber-300'],
+                  ['Lançamentos', reportMetrics.expenseOperations.length, 'text-teal-300'],
+                ].map(([label, value, color]) => (
+                  <div key={String(label)} className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 print:bg-white print:border-slate-300">
+                    <div className="text-[10px] uppercase tracking-widest text-slate-500 print:text-slate-600 font-bold">
+                      {label}
+                    </div>
+                    <div className={`text-xl font-black mt-1 ${color}`}>
+                      {label === 'Lançamentos'
+                        ? value
+                        : Number(value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-5 print:bg-white print:border-slate-300">
+                  <h3 className="text-sm font-bold text-slate-200 print:text-slate-950 mb-3">Principais conclusões</h3>
+                  <ul className="space-y-2 text-xs text-slate-400 print:text-slate-700">
+                    <li>
+                      Maior categoria: <strong className="text-slate-200 print:text-slate-950">{categorySummaries[0]?.name || 'Nenhuma'}</strong>
+                      {categorySummaries[0] && ` (${categorySummaries[0].total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })})`}.
+                    </li>
+                    <li>
+                      Maior favorecido: <strong className="text-slate-200 print:text-slate-950">{payeeSummaries[0]?.groupName || 'Nenhum'}</strong>
+                      {payeeSummaries[0] && ` (${payeeSummaries[0].total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })})`}.
+                    </li>
+                    <li>
+                      Maior lançamento: <strong className="text-slate-200 print:text-slate-950">
+                        {reportMetrics.largestExpense?.wording || 'Nenhum'}
+                      </strong>
+                      {reportMetrics.largestExpense &&
+                        ` (${Math.abs(reportMetrics.largestExpense.amount).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })})`}.
+                    </li>
+                    <li>
+                      {reportMetrics.uncategorizedCount} lançamento(s) de despesa sem categoria identificada.
+                    </li>
+                  </ul>
+                </div>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-5 print:bg-white print:border-slate-300">
+                  <h3 className="text-sm font-bold text-slate-200 print:text-slate-950 mb-3">Escopo do relatório</h3>
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <div className="text-slate-500">Arquivo</div>
+                      <div className="text-slate-200 print:text-slate-950 truncate" title={parsedData.fileName}>{parsedData.fileName}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Período</div>
+                      <div className="text-slate-200 print:text-slate-950">{startDateStr || 'Início'} — {endDateStr || 'Fim'}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Dias com gastos</div>
+                      <div className="text-slate-200 print:text-slate-950">{reportMetrics.daysCount}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Tags selecionadas</div>
+                      <div className="text-slate-200 print:text-slate-950">{selectedTagIds.length || 'Todas'}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="glass-card border border-slate-800/80 rounded-3xl p-6 print:border-slate-300 print:shadow-none">
+                <h3 className="text-sm font-bold text-slate-200 print:text-slate-950 mb-4">Despesas por categoria</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="text-slate-500 border-b border-slate-800 print:border-slate-300">
+                      <tr><th className="text-left py-2">Categoria</th><th className="text-right py-2">Valor</th><th className="text-right py-2">%</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 print:divide-slate-300">
+                      {categorySummaries.slice(0, 12).map((category) => (
+                        <tr key={category.key}>
+                          <td className="py-2 text-slate-300 print:text-slate-700">{category.name}</td>
+                          <td className="py-2 text-right font-semibold text-rose-300 print:text-slate-950">{category.total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                          <td className="py-2 text-right text-slate-500">{category.percentage.toFixed(1)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="glass-card border border-slate-800/80 rounded-3xl p-6 print:border-slate-300 print:shadow-none">
+                <h3 className="text-sm font-bold text-slate-200 print:text-slate-950 mb-4">Despesas por favorecido</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="text-slate-500 border-b border-slate-800 print:border-slate-300">
+                      <tr><th className="text-left py-2">Favorecido / grupo</th><th className="text-right py-2">Valor</th><th className="text-right py-2">Itens</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 print:divide-slate-300">
+                      {payeeSummaries.slice(0, 12).map((payee) => (
+                        <tr key={payee.groupName}>
+                          <td className="py-2 text-slate-300 print:text-slate-700">{payee.groupName}</td>
+                          <td className="py-2 text-right font-semibold text-rose-300 print:text-slate-950">{payee.total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                          <td className="py-2 text-right text-slate-500">{payee.operationsCount}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>

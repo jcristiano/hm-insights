@@ -9,6 +9,11 @@ import {
   SubcategorySummary,
 } from './types';
 
+function parseFiniteNumber(value: string | null | undefined, fallback = 0): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export function parseHomeBankDate(hbDateStr: string): Date {
   const hbDate = parseInt(hbDateStr, 10);
   if (isNaN(hbDate) || hbDate <= 0) return new Date(0);
@@ -26,6 +31,9 @@ export function parseHomeBankDate(hbDateStr: string): Date {
 export function parseHomeBankXML(xmlText: string) {
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+  if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
+    throw new Error('O conteúdo não é um XML válido.');
+  }
 
   const categoriesMap = new Map<number, Category>();
   const catNodes = xmlDoc.getElementsByTagName('cat');
@@ -45,7 +53,7 @@ export function parseHomeBankXML(xmlText: string) {
     const key = parseInt(node.getAttribute('key') || '0', 10);
     const name = node.getAttribute('name') || '';
     const bankname = node.getAttribute('bankname') || undefined;
-    const initial = parseFloat(node.getAttribute('initial') || '0');
+    const initial = parseFiniteNumber(node.getAttribute('initial'));
     accountsMap.set(key, { key, name, bankname, initial });
   });
 
@@ -65,6 +73,9 @@ export function parseHomeBankXML(xmlText: string) {
     const name = node.getAttribute('name') || '';
     tagsMap.set(key, { key, name });
   });
+  const tagKeysByName = new Map(
+    Array.from(tagsMap.values()).map((tag) => [tag.name, tag.key])
+  );
 
   // Map each Payee to its default / known Category from previous categorized operations
   const payeeDefaultCategoryMap = new Map<number, number>();
@@ -100,7 +111,7 @@ export function parseHomeBankXML(xmlText: string) {
 
   Array.from(opeNodes).forEach((node, opIndex) => {
     const date = parseHomeBankDate(node.getAttribute('date') || '0');
-    const mainAmount = parseFloat(node.getAttribute('amount') || '0');
+    const mainAmount = parseFiniteNumber(node.getAttribute('amount'));
     const accountKey = parseInt(node.getAttribute('account') || '0', 10);
     let mainCategoryKey = node.getAttribute('category')
       ? parseInt(node.getAttribute('category')!, 10)
@@ -141,7 +152,7 @@ export function parseHomeBankXML(xmlText: string) {
           catKey = payeeDefaultCategoryMap.get(payeeKey);
         }
         return {
-          amount: parseFloat(amtStr || '0'),
+          amount: parseFiniteNumber(amtStr),
           categoryKey: catKey,
           wording: memArray[idx] || wording
         };
@@ -157,7 +168,7 @@ export function parseHomeBankXML(xmlText: string) {
             splitCatKey = payeeDefaultCategoryMap.get(payeeKey);
           }
           return {
-            amount: parseFloat(splitNode.getAttribute('amount') || '0'),
+            amount: parseFiniteNumber(splitNode.getAttribute('amount')),
             categoryKey: splitCatKey,
             wording: splitNode.getAttribute('wording') || wording
           };
@@ -175,14 +186,13 @@ export function parseHomeBankXML(xmlText: string) {
           const numericKey = Number(part);
           if (Number.isInteger(numericKey)) return numericKey;
 
-          const tag = Array.from(tagsMap.values()).find((item) => item.name === part);
-          return tag?.key;
+          return tagKeysByName.get(part);
         })
         .filter((key): key is number => key !== undefined);
     }
 
     operations.push({
-      id: `ope-${Math.random().toString(36).substr(2, 9)}-${date.getTime()}`,
+      id: `ope-${opIndex}`,
       order: opIndex,
       date,
       amount: mainAmount,
