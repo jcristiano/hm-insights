@@ -1,8 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { parseHomeBankXML, calculateAllCategoryExpenses } from './xmlParser';
-import { Category, Account, Payee, Operation, PresetPeriod, UserPreferences } from './types';
+import { Category, Account, Payee, Operation, PresetPeriod, UserPreferences, Tag } from './types';
 import { loadUserPreferences, saveUserPreferences } from './preferences';
-import { parseItemQuantity } from './quantityParser';
 import {
   UploadCloud,
   PieChart,
@@ -20,7 +19,7 @@ import {
   CreditCard,
   Sparkles,
   TrendingUp,
-  Tag,
+  Tag as TagIcon,
   Layers,
   FileCheck,
   FilterX,
@@ -32,8 +31,22 @@ import {
   ArrowDownUp,
   ArrowUp,
   ArrowDown,
-  Box
 } from 'lucide-react';
+import {
+  BarChart,
+  Bar,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Line,
+  LineChart,
+  Pie,
+  PieChart as RechartsPieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 
 function formatDateForInput(d: Date): string {
   const year = d.getFullYear();
@@ -94,12 +107,57 @@ function getPresetDates(
   return null;
 }
 
+interface PayeeUnitSummary {
+  name: string;
+  total: number;
+  operationsCount: number;
+  operations: Operation[];
+}
+
+interface PayeeSummary {
+  groupName: string;
+  total: number;
+  operationsCount: number;
+  units: PayeeUnitSummary[];
+}
+
+const ANALYSIS_COLORS = [
+  '#818cf8',
+  '#2dd4bf',
+  '#fbbf24',
+  '#fb7185',
+  '#60a5fa',
+  '#c084fc',
+  '#34d399',
+  '#f97316',
+  '#38bdf8',
+  '#e879f9',
+];
+
+function parsePayeeGrouping(payeeName?: string): { groupName: string; unitName: string } {
+  const value = payeeName?.trim();
+  if (!value) {
+    return { groupName: 'Sem favorecido', unitName: 'Sem unidade' };
+  }
+
+  const match = value.match(/^(.*?)\s*\(([^()]*)\)\s*$/);
+  if (!match) {
+    return { groupName: value, unitName: 'Favorecido direto' };
+  }
+
+  return {
+    groupName: match[2].trim() || 'Sem grupo',
+    unitName: match[1].trim() || 'Unidade não informada',
+  };
+}
+
 export default function App() {
   const [parsedData, setParsedData] = useState<{
     fileName: string;
     categoriesMap: Map<number, Category>;
     accountsMap: Map<number, Account>;
     payeesMap: Map<number, Payee>;
+    tagsMap: Map<number, Tag>;
     operations: Operation[];
   } | null>(null);
 
@@ -108,6 +166,7 @@ export default function App() {
   const [startDateStr, setStartDateStr] = useState<string>('');
   const [endDateStr, setEndDateStr] = useState<string>('');
   const [searchFilter, setSearchFilter] = useState<string>('');
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [expandedCategoryKeys, setExpandedCategoryKeys] = useState<Set<number>>(new Set());
   const [useFileMaxDateAsRef, setUseFileMaxDateAsRef] = useState<boolean>(true);
   const [selectedSubcategoryKeys, setSelectedSubcategoryKeys] = useState<
@@ -115,10 +174,14 @@ export default function App() {
   >({});
 
   // Navigation states
-  const [activeView, setActiveView] = useState<'dashboard' | 'accounts'>('dashboard');
+  const [activeView, setActiveView] = useState<'dashboard' | 'analysis' | 'accounts' | 'payees'>('dashboard');
+  const [analysisCategoryKey, setAnalysisCategoryKey] = useState<number | null>(null);
+  const [analysisSubcategoryKey, setAnalysisSubcategoryKey] = useState<number | null>(null);
+  const [payeeSearchFilter, setPayeeSearchFilter] = useState('');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [selectedAccountKey, setSelectedAccountKey] = useState<number | null>(null);
   const [expandedSplits, setExpandedSplits] = useState<Set<string>>(new Set());
+  const [expandedPayeeUnits, setExpandedPayeeUnits] = useState<Set<string>>(new Set());
 
   // User Preferences (saved in LocalStorage)
   const [preferences, setPreferences] = useState<UserPreferences>(() => loadUserPreferences());
@@ -226,16 +289,22 @@ export default function App() {
     return new Date(parts[0], parts[1] - 1, parts[2], 23, 59, 59);
   }, [endDateStr]);
 
-  // Filter operations for overall financial totals (excluding internal transfers)
+  // Filter operations for overall financial totals (excluding internal transfers) and tag filter
   const filteredOperations = useMemo(() => {
     if (!parsedData) return [];
     return parsedData.operations.filter((op) => {
       if (op.isTransfer) return false; // Exclude internal transfers between accounts
       if (activeStartDate && op.date < activeStartDate) return false;
       if (activeEndDate && op.date > activeEndDate) return false;
+      if (selectedTagIds.length > 0) {
+        if (!op.tags) return false;
+        // Match any selected tag
+        const hasTag = op.tags.some((t) => selectedTagIds.includes(t));
+        if (!hasTag) return false;
+      }
       return true;
     });
-  }, [parsedData, activeStartDate, activeEndDate]);
+  }, [parsedData, activeStartDate, activeEndDate, selectedTagIds]);
 
   const { totalIncomes, totalExpenses } = useMemo(() => {
     let inc = 0;
@@ -250,18 +319,16 @@ export default function App() {
     return { totalIncomes: inc, totalExpenses: exp };
   }, [filteredOperations]);
 
-  // Calculate grouped categories with date filter
+  // Calculate grouped categories from the same filtered operations used by the KPIs.
   const categorySummaries = useMemo(() => {
     if (!parsedData) return [];
     return calculateAllCategoryExpenses(
-      parsedData.operations,
+      filteredOperations,
       parsedData.categoriesMap,
       parsedData.accountsMap,
-      parsedData.payeesMap,
-      activeStartDate,
-      activeEndDate
+      parsedData.payeesMap
     );
-  }, [parsedData, activeStartDate, activeEndDate]);
+  }, [parsedData, filteredOperations]);
 
   // Filter categories by search filter
   const filteredCategories = useMemo(() => {
@@ -284,6 +351,149 @@ export default function App() {
     if (categorySummaries.length === 0) return null;
     return categorySummaries[0];
   }, [categorySummaries]);
+
+  const analysisCategoryData = useMemo(
+    () =>
+      categorySummaries.map((category) => ({
+        key: category.key,
+        name: category.name,
+        value: category.total,
+      })),
+    [categorySummaries]
+  );
+
+  const selectedAnalysisCategory = useMemo(
+    () => categorySummaries.find((category) => category.key === analysisCategoryKey) || null,
+    [analysisCategoryKey, categorySummaries]
+  );
+
+  const analysisSubcategoryData = useMemo(
+    () =>
+      selectedAnalysisCategory?.subcategories.map((subcategory) => ({
+        key: subcategory.key,
+        name: subcategory.name,
+        value: subcategory.total,
+      })) || [],
+    [selectedAnalysisCategory]
+  );
+
+  const analysisScopedOperations = useMemo(() => {
+    if (!selectedAnalysisCategory) {
+      return categorySummaries.flatMap((category) => category.operations);
+    }
+
+    return selectedAnalysisCategory.operations.filter(
+      (operation) =>
+        analysisSubcategoryKey === null ||
+        operation.subcategoryKey === analysisSubcategoryKey
+    );
+  }, [analysisSubcategoryKey, categorySummaries, selectedAnalysisCategory]);
+
+  const analysisPayeeData = useMemo(() => {
+    const totals = new Map<string, number>();
+    analysisScopedOperations.forEach((operation) => {
+      const { groupName } = parsePayeeGrouping(operation.payeeName);
+      totals.set(groupName, (totals.get(groupName) || 0) + operation.amount);
+    });
+
+    return Array.from(totals.entries())
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10);
+  }, [analysisScopedOperations]);
+
+  const analysisMonthlyData = useMemo(() => {
+    const totals = new Map<string, { expenses: number; incomes: number }>();
+    filteredOperations.forEach((operation) => {
+      const key = `${operation.date.getFullYear()}-${String(operation.date.getMonth() + 1).padStart(2, '0')}`;
+      const current = totals.get(key) || { expenses: 0, incomes: 0 };
+      if (operation.amount < 0) current.expenses += Math.abs(operation.amount);
+      else current.incomes += operation.amount;
+      totals.set(key, current);
+    });
+
+    return Array.from(totals.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, values]) => ({
+        month: month.split('-').reverse().join('/'),
+        expenses: values.expenses,
+        incomes: values.incomes,
+      }));
+  }, [filteredOperations]);
+
+  const analysisAccountData = useMemo(() => {
+    if (!parsedData) return [];
+    const totals = new Map<number, number>();
+    filteredOperations.forEach((operation) => {
+      if (operation.amount < 0) {
+        totals.set(
+          operation.accountKey,
+          (totals.get(operation.accountKey) || 0) + Math.abs(operation.amount)
+        );
+      }
+    });
+
+    return Array.from(totals.entries())
+      .map(([key, value]) => ({
+        name: parsedData.accountsMap.get(key)?.name || 'Sem conta',
+        value,
+      }))
+      .sort((a, b) => b.value - a.value);
+  }, [filteredOperations, parsedData]);
+
+  const payeeSummaries = useMemo<PayeeSummary[]>(() => {
+    const groups = new Map<string, Map<string, PayeeUnitSummary>>();
+
+    filteredOperations.forEach((op) => {
+      if (op.amount >= 0) return;
+
+      const payeeName = op.payeeKey ? parsedData?.payeesMap.get(op.payeeKey)?.name : undefined;
+      const { groupName, unitName } = parsePayeeGrouping(payeeName);
+      if (!groups.has(groupName)) groups.set(groupName, new Map());
+
+      const units = groups.get(groupName)!;
+      const current = units.get(unitName) || {
+        name: unitName,
+        total: 0,
+        operationsCount: 0,
+        operations: [],
+      };
+      units.set(unitName, {
+        name: unitName,
+        total: current.total + Math.abs(op.amount),
+        operationsCount: current.operationsCount + 1,
+        operations: [...current.operations, op],
+      });
+    });
+
+    return Array.from(groups.entries())
+      .map(([groupName, units]) => {
+        const unitList = Array.from(units.values()).sort((a, b) => b.total - a.total);
+        return {
+          groupName,
+          total: unitList.reduce((sum, unit) => sum + unit.total, 0),
+          operationsCount: unitList.reduce((sum, unit) => sum + unit.operationsCount, 0),
+          units: unitList,
+        };
+      })
+      .sort((a, b) => b.total - a.total);
+  }, [filteredOperations, parsedData]);
+
+  const filteredPayeeSummaries = useMemo(() => {
+    const term = payeeSearchFilter.trim().toLowerCase();
+    if (!term) return payeeSummaries;
+
+    return payeeSummaries
+      .map((group) => ({
+        ...group,
+        units: group.units.filter(
+          (unit) =>
+            group.groupName.toLowerCase().includes(term) ||
+            unit.name.toLowerCase().includes(term)
+        ),
+      }))
+      .filter((group) => group.units.length > 0);
+  }, [payeeSearchFilter, payeeSummaries]);
 
   // Expand / Collapse Category Accordion
   const toggleExpandCategory = (key: number) => {
@@ -387,6 +597,34 @@ export default function App() {
               >
                 <Landmark className="w-5 h-5" />
                 Contas e Extratos
+              </button>
+              <button
+                onClick={() => {
+                  setActiveView('analysis');
+                  setIsMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition ${
+                  activeView === 'analysis'
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <TrendingUp className="w-5 h-5" />
+                Análise Gráfica
+              </button>
+              <button
+                onClick={() => {
+                  setActiveView('payees');
+                  setIsMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition ${
+                  activeView === 'payees'
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <Building2 className="w-5 h-5" />
+                Gastos por Favorecido
               </button>
             </div>
             <div className="p-4 border-t border-slate-800 text-xs text-slate-500 text-center">
@@ -682,24 +920,51 @@ export default function App() {
                 </div>
 
                 {/* Years Selector Row */}
-                {availableYears.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/60">
-                    <span className="text-xs text-slate-400 mr-2 font-medium">Filtrar por Ano:</span>
-                    {availableYears.map((yr) => (
-                      <button
-                        key={yr}
-                        onClick={() => handleApplyYearFilter(yr)}
-                        className={`px-3 py-1 rounded-lg text-xs font-medium transition ${
-                          selectedYear === yr.toString()
-                            ? 'bg-teal-500 text-slate-950 font-bold shadow-md shadow-teal-500/20'
-                            : 'bg-slate-950 hover:bg-slate-800 text-slate-400 border border-slate-800/80'
-                        }`}
-                      >
-                        {yr}
-                      </button>
-                    ))}
-                  </div>
-                )}
+{availableYears.length > 0 && (
+  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/60">
+    <span className="text-xs text-slate-400 mr-2 font-medium">Filtrar por Ano:</span>
+    {availableYears.map((yr) => (
+      <button
+        key={yr}
+        onClick={() => handleApplyYearFilter(yr)}
+        className={`px-3 py-1 rounded-lg text-xs font-medium transition ${
+          selectedYear === yr.toString()
+            ? 'bg-teal-500 text-slate-950 font-bold shadow-md shadow-teal-500/20'
+            : 'bg-slate-950 hover:bg-slate-800 text-slate-400 border border-slate-800/80'
+        }`}
+      >
+        {yr}
+      </button>
+    ))}
+  </div>
+)}
+
+{/* Tags Selector Row */}
+{parsedData && parsedData.tagsMap && Array.from(parsedData.tagsMap.values()).length > 0 && (
+  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/60">
+    <span className="text-xs text-slate-400 mr-2 font-medium">Filtrar por Tag:</span>
+    {Array.from(parsedData.tagsMap.values()).map((tag) => {
+      const isSelected = selectedTagIds.includes(tag.key);
+      return (
+        <button
+          key={tag.key}
+          onClick={() => {
+            setSelectedTagIds((prev) =>
+              isSelected ? prev.filter((id) => id !== tag.key) : [...prev, tag.key]
+            );
+          }}
+          className={`px-3 py-1 rounded-lg text-xs font-medium transition ${
+            isSelected
+              ? 'bg-indigo-600 text-white font-bold shadow-md shadow-indigo-500/20'
+              : 'bg-slate-950 hover:bg-slate-800 text-slate-400 border border-slate-800/80'
+          }`}
+        >
+          <TagIcon className="inline w-3 h-3 mr-1 align-text-bottom" /> {tag.name}
+        </button>
+      );
+    })}
+  </div>
+)}
               </div>
             </div>
 
@@ -1095,7 +1360,7 @@ export default function App() {
                                         <td className="py-3.5 px-4 text-slate-400">
                                           {op.subcategoryName ? (
                                             <span className="inline-flex items-center gap-1 bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-2 py-0.5 rounded text-[11px] font-medium">
-                                              <Tag className="w-3 h-3 text-indigo-400" />
+                                              <TagIcon className="w-3 h-3 text-indigo-400" />
                                               {op.subcategoryName}
                                             </span>
                                           ) : (
@@ -1129,6 +1394,475 @@ export default function App() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : activeView === 'analysis' ? (
+          <div className="space-y-6">
+            <div className="glass-card border border-slate-800/80 rounded-3xl p-6 md:p-8 shadow-2xl">
+              <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-6">
+                <div>
+                  <h2 className="text-xl font-extrabold text-white flex items-center gap-2.5">
+                    <TrendingUp className="w-6 h-6 text-indigo-400" />
+                    Análise Gráfica dos Gastos
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Clique nos segmentos para navegar entre categorias, subcategorias e favorecidos.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <button
+                    onClick={() => {
+                      setAnalysisCategoryKey(null);
+                      setAnalysisSubcategoryKey(null);
+                    }}
+                    className={`px-3 py-1.5 rounded-lg border transition ${
+                      analysisCategoryKey === null
+                        ? 'bg-indigo-600 text-white border-indigo-500'
+                        : 'bg-slate-900 text-slate-400 border-slate-800'
+                    }`}
+                  >
+                    Categorias
+                  </button>
+                  {selectedAnalysisCategory && (
+                    <>
+                      <span className="text-slate-600">/</span>
+                      <button
+                        onClick={() => setAnalysisSubcategoryKey(null)}
+                        className={`px-3 py-1.5 rounded-lg border transition ${
+                          analysisSubcategoryKey === null
+                            ? 'bg-indigo-600 text-white border-indigo-500'
+                            : 'bg-slate-900 text-slate-400 border-slate-800'
+                        }`}
+                      >
+                        {selectedAnalysisCategory.name}
+                      </button>
+                    </>
+                  )}
+                  {selectedAnalysisCategory && analysisSubcategoryKey !== null && (
+                    <>
+                      <span className="text-slate-600">/</span>
+                      <span className="px-3 py-1.5 rounded-lg bg-teal-500/10 text-teal-300 border border-teal-500/20">
+                        {analysisSubcategoryData.find((item) => item.key === analysisSubcategoryKey)?.name}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                <div className="lg:col-span-2 bg-slate-950/60 border border-slate-800 rounded-2xl p-4">
+                  <div className="flex justify-between items-center mb-2">
+                    <h3 className="text-sm font-bold text-slate-200">
+                      {selectedAnalysisCategory ? `Distribuição: ${selectedAnalysisCategory.name}` : 'Distribuição por categoria'}
+                    </h3>
+                    <span className="text-[10px] text-slate-500">Clique para detalhar</span>
+                  </div>
+                  <div className="h-[320px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <RechartsPieChart>
+                        <Pie
+                          data={selectedAnalysisCategory ? analysisSubcategoryData : analysisCategoryData}
+                          dataKey="value"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={72}
+                          outerRadius={112}
+                          paddingAngle={2}
+                          stroke="#020617"
+                          strokeWidth={2}
+                          onClick={(data) => {
+                            const key = Number(data.key);
+                            if (!Number.isFinite(key)) return;
+                            if (!selectedAnalysisCategory) {
+                              setAnalysisCategoryKey(key);
+                              setAnalysisSubcategoryKey(null);
+                            } else {
+                              setAnalysisSubcategoryKey(key);
+                            }
+                          }}
+                        >
+                          {(selectedAnalysisCategory ? analysisSubcategoryData : analysisCategoryData).map(
+                            (entry, index) => (
+                              <Cell key={entry.key} fill={ANALYSIS_COLORS[index % ANALYSIS_COLORS.length]} />
+                            )
+                          )}
+                        </Pie>
+                        <Tooltip
+                          formatter={(value) =>
+                            Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+                          }
+                          contentStyle={{
+                            backgroundColor: '#0f172a',
+                            border: '1px solid #334155',
+                            borderRadius: '12px',
+                            color: '#f8fafc',
+                          }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: '11px' }} />
+                      </RechartsPieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4">
+                  <h3 className="text-sm font-bold text-slate-200 mb-2">Favorecidos no recorte</h3>
+                  <p className="text-[10px] text-slate-500 mb-3">Os 10 maiores gastos da seleção atual.</p>
+                  <div className="h-[280px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={analysisPayeeData} layout="vertical" margin={{ left: 8, right: 12 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
+                        <XAxis type="number" hide />
+                        <YAxis
+                          type="category"
+                          dataKey="name"
+                          width={105}
+                          tick={{ fill: '#94a3b8', fontSize: 10 }}
+                        />
+                        <Tooltip
+                          formatter={(value) =>
+                            Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+                          }
+                          contentStyle={{
+                            backgroundColor: '#0f172a',
+                            border: '1px solid #334155',
+                            borderRadius: '12px',
+                          }}
+                        />
+                        <Bar dataKey="value" fill="#2dd4bf" radius={[0, 6, 6, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+              <div className="lg:col-span-3 glass-card border border-slate-800/80 rounded-3xl p-6 shadow-2xl">
+                <h3 className="text-sm font-bold text-slate-200 mb-1">Evolução mensal</h3>
+                <p className="text-[10px] text-slate-500 mb-4">Entradas e saídas dentro do período filtrado.</p>
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={analysisMonthlyData} margin={{ left: 4, right: 12 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                      <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                      <YAxis
+                        tick={{ fill: '#94a3b8', fontSize: 10 }}
+                        tickFormatter={(value: number) => `R$ ${Math.round(value / 1000)}k`}
+                      />
+                      <Tooltip
+                        formatter={(value) =>
+                          Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+                        }
+                        contentStyle={{
+                          backgroundColor: '#0f172a',
+                          border: '1px solid #334155',
+                          borderRadius: '12px',
+                        }}
+                      />
+                      <Legend wrapperStyle={{ fontSize: '11px' }} />
+                      <Line type="monotone" dataKey="expenses" name="Despesas" stroke="#fb7185" strokeWidth={3} dot={false} />
+                      <Line type="monotone" dataKey="incomes" name="Receitas" stroke="#34d399" strokeWidth={3} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="lg:col-span-2 glass-card border border-slate-800/80 rounded-3xl p-6 shadow-2xl">
+                <h3 className="text-sm font-bold text-slate-200 mb-1">Despesas por conta</h3>
+                <p className="text-[10px] text-slate-500 mb-4">Onde os gastos estão concentrados.</p>
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <RechartsPieChart>
+                      <Pie
+                        data={analysisAccountData}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={100}
+                        paddingAngle={2}
+                        stroke="#020617"
+                        strokeWidth={2}
+                      >
+                        {analysisAccountData.map((entry, index) => (
+                          <Cell key={entry.name} fill={ANALYSIS_COLORS[index % ANALYSIS_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        formatter={(value) =>
+                          Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+                        }
+                        contentStyle={{
+                          backgroundColor: '#0f172a',
+                          border: '1px solid #334155',
+                          borderRadius: '12px',
+                        }}
+                      />
+                      <Legend wrapperStyle={{ fontSize: '11px' }} />
+                    </RechartsPieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : activeView === 'payees' ? (
+          <div className="space-y-8">
+            <div className="glass-card border border-slate-800/80 rounded-3xl p-6 md:p-8 shadow-2xl">
+              <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-6 pb-5 border-b border-slate-800/80">
+                <div>
+                  <h2 className="text-xl font-extrabold text-white flex items-center gap-2.5">
+                    <Building2 className="w-6 h-6 text-indigo-400" />
+                    Gastos por Favorecido
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Grupos vêm do texto entre parênteses; o texto externo representa a unidade.
+                    Favorecidos sem parênteses aparecem como gastos diretos.
+                  </p>
+                </div>
+                <div className="relative w-full lg:w-72">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Buscar grupo ou unidade..."
+                    value={payeeSearchFilter}
+                    onChange={(event) => setPayeeSearchFilter(event.target.value)}
+                    className="w-full glass-input rounded-xl pl-9 pr-4 py-2.5 text-xs text-slate-100 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+                  <div className="text-[11px] uppercase tracking-widest text-slate-500 font-bold">Total de gastos</div>
+                  <div className="text-xl font-black text-rose-400 mt-1">
+                    {totalExpenses.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                  </div>
+                </div>
+                <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+                  <div className="text-[11px] uppercase tracking-widest text-slate-500 font-bold">Grupos</div>
+                  <div className="text-xl font-black text-indigo-300 mt-1">{filteredPayeeSummaries.length}</div>
+                </div>
+                <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+                  <div className="text-[11px] uppercase tracking-widest text-slate-500 font-bold">Lançamentos</div>
+                  <div className="text-xl font-black text-teal-300 mt-1">
+                    {filteredOperations.filter((op) => op.amount < 0).length}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80 mb-6">
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                  <Calendar className="w-4 h-4 text-indigo-400" />
+                  <span className="text-xs font-semibold text-slate-300">Período dos gastos</span>
+                  <button
+                    onClick={() => handleApplyPreset('all')}
+                    className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold transition ${
+                      activePreset === 'all'
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-slate-900 text-slate-400 border border-slate-800'
+                    }`}
+                  >
+                    Todos
+                  </button>
+                  {[
+                    ['current_month', 'Mês atual'],
+                    ['previous_month', 'Mês anterior'],
+                    ['current_bimonth', 'Bimestre'],
+                    ['current_quarter', 'Trimestre'],
+                    ['current_semester', 'Semestre'],
+                    ['current_year', 'Ano'],
+                  ].map(([preset, label]) => (
+                    <button
+                      key={preset}
+                      onClick={() => handleApplyPreset(preset as PresetPeriod)}
+                      className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold transition ${
+                        activePreset === preset
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-slate-900 text-slate-400 border border-slate-800'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                    De
+                    <input
+                      type="date"
+                      value={startDateStr}
+                      onChange={(event) => {
+                        setStartDateStr(event.target.value);
+                        setActivePreset('custom');
+                        setSelectedYear(null);
+                      }}
+                      className="glass-input text-xs text-slate-100 px-2.5 py-1.5 rounded-lg focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                    Até
+                    <input
+                      type="date"
+                      value={endDateStr}
+                      onChange={(event) => {
+                        setEndDateStr(event.target.value);
+                        setActivePreset('custom');
+                        setSelectedYear(null);
+                      }}
+                      className="glass-input text-xs text-slate-100 px-2.5 py-1.5 rounded-lg focus:outline-none"
+                    />
+                  </label>
+                  {(startDateStr || endDateStr || activePreset !== 'all') && (
+                    <button
+                      onClick={clearDateFilters}
+                      className="text-[11px] text-slate-400 hover:text-rose-400 flex items-center gap-1 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg transition"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      Limpar
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {filteredPayeeSummaries.length === 0 ? (
+                <div className="text-center py-16 text-slate-500 text-sm bg-slate-900/30 rounded-2xl border border-slate-800/50">
+                  Nenhum gasto encontrado para os filtros atuais.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {filteredPayeeSummaries.map((group) => (
+                    <div
+                      key={group.groupName}
+                      className="bg-slate-950/70 border border-slate-800/80 rounded-2xl overflow-hidden"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 border-b border-slate-800/80">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-400">
+                            <Building2 className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-bold text-slate-100 truncate">{group.groupName}</div>
+                            <div className="text-[11px] text-slate-500">
+                              {group.operationsCount} {group.operationsCount === 1 ? 'lançamento' : 'lançamentos'} em {group.units.length} {group.units.length === 1 ? 'unidade' : 'unidades'}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-lg font-black text-rose-400">
+                          {group.total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                        </div>
+                      </div>
+
+                      <div className="divide-y divide-slate-800/60">
+                        {group.units.map((unit) => {
+                          const unitKey = `${group.groupName}-${unit.name}`;
+                          const isUnitExpanded = expandedPayeeUnits.has(unitKey);
+                          return (
+                            <div key={unitKey}>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedPayeeUnits((previous) => {
+                                    const next = new Set(previous);
+                                    if (next.has(unitKey)) next.delete(unitKey);
+                                    else next.add(unitKey);
+                                    return next;
+                                  })
+                                }
+                                className="w-full flex items-center justify-between gap-4 px-5 py-3.5 text-left hover:bg-slate-900/70 transition"
+                              >
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <span className="w-2 h-2 rounded-full bg-teal-400 shrink-0" />
+                                  <span className="text-sm text-slate-300 truncate">{unit.name}</span>
+                                  <span className="text-[10px] text-slate-500 shrink-0">
+                                    {unit.operationsCount} {unit.operationsCount === 1 ? 'item' : 'itens'}
+                                  </span>
+                                  {isUnitExpanded ? (
+                                    <ChevronUp className="w-4 h-4 text-indigo-400" />
+                                  ) : (
+                                    <ChevronDown className="w-4 h-4 text-slate-500" />
+                                  )}
+                                </div>
+                                <span className="font-bold text-slate-200 whitespace-nowrap">
+                                  {unit.total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                </span>
+                              </button>
+
+                              {isUnitExpanded && (
+                                <div className="px-5 pb-4 space-y-2">
+                                  {unit.operations
+                                    .slice()
+                                    .sort((a, b) => b.date.getTime() - a.date.getTime())
+                                    .map((op) => {
+                                      const hasSplits = Boolean(op.splits && op.splits.length > 0);
+                                      const isSplitExpanded = expandedSplits.has(op.id);
+                                      const category = op.categoryKey
+                                        ? parsedData.categoriesMap.get(op.categoryKey)?.name
+                                        : undefined;
+                                      return (
+                                        <div key={op.id} className="bg-slate-900/70 border border-slate-800 rounded-xl p-3">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              if (!hasSplits) return;
+                                              setExpandedSplits((previous) => {
+                                                const next = new Set(previous);
+                                                if (next.has(op.id)) next.delete(op.id);
+                                                else next.add(op.id);
+                                                return next;
+                                              });
+                                            }}
+                                            className={`w-full flex items-center justify-between gap-3 text-left ${hasSplits ? 'cursor-pointer' : 'cursor-default'}`}
+                                          >
+                                            <div className="min-w-0">
+                                              <div className="flex flex-wrap items-center gap-2">
+                                                <span className="text-[11px] text-slate-500 font-mono">
+                                                  {op.date.toLocaleDateString('pt-BR')}
+                                                </span>
+                                                {hasSplits && (
+                                                  <span className="text-[10px] text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 px-1.5 py-0.5 rounded">
+                                                    Compra subdividida ({op.splits!.length} itens)
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <div className="text-sm text-slate-200 font-semibold truncate mt-1">
+                                                {op.wording || 'Lançamento sem descrição'}
+                                              </div>
+                                              <div className="text-[10px] text-slate-500 mt-1">
+                                                {category || 'Sem categoria'}
+                                                {op.accountKey ? ` • ${parsedData.accountsMap.get(op.accountKey)?.name || 'Sem conta'}` : ''}
+                                              </div>
+                                            </div>
+                                            <span className="font-bold text-rose-400 whitespace-nowrap">
+                                              {Math.abs(op.amount).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                            </span>
+                                          </button>
+
+                                          {hasSplits && isSplitExpanded && (
+                                            <div className="mt-3 pt-3 border-t border-slate-800/80 space-y-1.5">
+                                              {op.splits!.map((split, splitIndex) => (
+                                                <div key={`${op.id}-split-${splitIndex}`} className="flex justify-between gap-3 text-xs text-slate-400">
+                                                  <span className="truncate">{split.wording || op.wording || 'Item sem descrição'}</span>
+                                                  <span className="font-mono whitespace-nowrap">
+                                                    {Math.abs(split.amount).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                                  </span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -1198,6 +1932,22 @@ export default function App() {
                             const orderDiff = (b.order ?? 0) - (a.order ?? 0);
                             return isAsc ? -orderDiff : orderDiff;
                           });
+                        const dailyBalances = new Map<string, number>();
+                        let runningBalance = account?.initial ?? 0;
+                        accountOps
+                          .slice()
+                          .sort((a, b) => {
+                            const dateDiff = a.date.getTime() - b.date.getTime();
+                            if (dateDiff !== 0) return dateDiff;
+                            return (a.order ?? 0) - (b.order ?? 0);
+                          })
+                          .forEach((op) => {
+                            runningBalance += op.amount;
+                            const y = op.date.getFullYear();
+                            const m = String(op.date.getMonth() + 1).padStart(2, '0');
+                            const d = String(op.date.getDate()).padStart(2, '0');
+                            dailyBalances.set(`${y}-${m}-${d}`, runningBalance);
+                          });
                         
                         return (
                           <>
@@ -1250,6 +2000,13 @@ export default function App() {
                                         const monthName = dateObj.toLocaleDateString('pt-BR', { month: 'long' });
                                         
                                         const dailyTotal = ops.reduce((sum, o) => sum + o.amount, 0);
+                                        const dailyIncome = ops
+                                          .filter((op) => op.amount > 0)
+                                          .reduce((sum, op) => sum + op.amount, 0);
+                                        const dailyExpenses = ops
+                                          .filter((op) => op.amount < 0)
+                                          .reduce((sum, op) => sum + Math.abs(op.amount), 0);
+                                        const balanceAfterDay = dailyBalances.get(dateStr) ?? (account?.initial ?? 0);
 
                                         return (
                                           <div key={dateStr} className="relative">
@@ -1262,8 +2019,19 @@ export default function App() {
                                                   <span className="text-[10px] uppercase font-bold text-slate-400">{monthName.substring(0, 3)}, {year}</span>
                                                 </div>
                                               </div>
-                                              <div className={`text-xs font-bold ${dailyTotal >= 0 ? 'text-emerald-500/80' : 'text-slate-500'}`}>
-                                                {dailyTotal >= 0 ? '+' : ''}{dailyTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                              <div className="flex flex-wrap justify-end items-center gap-x-4 gap-y-1 text-[10px] font-semibold">
+                                                <span className="text-emerald-400" title="Total de entradas do dia">
+                                                  Entradas: +{dailyIncome.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                                </span>
+                                                <span className="text-rose-400" title="Total de saídas do dia">
+                                                  Saídas: -{dailyExpenses.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                                </span>
+                                                <span className={dailyTotal >= 0 ? 'text-blue-300' : 'text-amber-300'} title="Resultado líquido do dia">
+                                                  Dia: {dailyTotal >= 0 ? '+' : ''}{dailyTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                                </span>
+                                                <span className={`font-bold ${balanceAfterDay >= 0 ? 'text-slate-100' : 'text-rose-300'}`} title="Saldo acumulado após as movimentações deste dia">
+                                                  Saldo: {balanceAfterDay.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                                </span>
                                               </div>
                                             </div>
 

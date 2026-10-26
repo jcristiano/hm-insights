@@ -4,6 +4,7 @@ import {
   Operation,
   Payee,
   Account,
+  Tag,
   DetailedOperation,
   SubcategorySummary,
 } from './types';
@@ -54,6 +55,15 @@ export function parseHomeBankXML(xmlText: string) {
     const key = parseInt(node.getAttribute('key') || '0', 10);
     const name = node.getAttribute('name') || '';
     payeesMap.set(key, { key, name });
+  });
+
+  // Parse tags definitions
+  const tagsMap = new Map<number, Tag>();
+  const tagNodes = xmlDoc.getElementsByTagName('tag');
+  Array.from(tagNodes).forEach((node) => {
+    const key = parseInt(node.getAttribute('key') || '0', 10);
+    const name = node.getAttribute('name') || '';
+    tagsMap.set(key, { key, name });
   });
 
   // Map each Payee to its default / known Category from previous categorized operations
@@ -155,6 +165,22 @@ export function parseHomeBankXML(xmlText: string) {
       }
     }
 
+    // HomeBank stores tags on operations by name, while the UI uses tag keys.
+    const tagsAttr = node.getAttribute('tags');
+    let tags: number[] | undefined = undefined;
+    if (tagsAttr) {
+      const parts = tagsAttr.split(/[ ,]+/).filter(Boolean);
+      tags = parts
+        .map((part) => {
+          const numericKey = Number(part);
+          if (Number.isInteger(numericKey)) return numericKey;
+
+          const tag = Array.from(tagsMap.values()).find((item) => item.name === part);
+          return tag?.key;
+        })
+        .filter((key): key is number => key !== undefined);
+    }
+
     operations.push({
       id: `ope-${Math.random().toString(36).substr(2, 9)}-${date.getTime()}`,
       order: opIndex,
@@ -168,10 +194,11 @@ export function parseHomeBankXML(xmlText: string) {
       kxfer,
       isTransfer,
       splits,
+      tags,
     });
   });
 
-  return { categoriesMap, accountsMap, payeesMap, operations };
+  return { categoriesMap, accountsMap, payeesMap, tagsMap, operations };
 }
 
 /**

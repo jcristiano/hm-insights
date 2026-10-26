@@ -23,6 +23,11 @@ export interface OperationSplit {
   wording?: string;
 }
 
+export interface Tag {
+  key: number;
+  name: string;
+}
+
 export interface Operation {
   id: string;
   order: number;
@@ -36,6 +41,7 @@ export interface Operation {
   kxfer?: number;
   isTransfer?: boolean;
   splits?: OperationSplit[];
+  tags?: number[]; // IDs of tags associated with the operation
 }
 
 export interface DetailedOperation {
