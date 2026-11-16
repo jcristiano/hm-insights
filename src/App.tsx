@@ -428,8 +428,9 @@ export default function App() {
   const analysisPayeeData = useMemo(() => {
     const totals = new Map<string, number>();
     analysisScopedOperations.forEach((operation) => {
+      if (operation.amount >= 0) return;
       const { groupName } = parsePayeeGrouping(operation.payeeName);
-      totals.set(groupName, (totals.get(groupName) || 0) + operation.amount);
+      totals.set(groupName, (totals.get(groupName) || 0) + Math.abs(operation.amount));
     });
 
     return Array.from(totals.entries())
@@ -480,7 +481,12 @@ export default function App() {
   const reportMetrics = useMemo(() => {
     const expenseOperations = filteredOperations.filter((operation) => operation.amount < 0);
     const days = new Set(
-      expenseOperations.map((operation) => operation.date.toISOString().slice(0, 10))
+      expenseOperations.map((operation) => {
+        const year = operation.date.getFullYear();
+        const month = String(operation.date.getMonth() + 1).padStart(2, '0');
+        const day = String(operation.date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      })
     );
     const largestExpense = expenseOperations.reduce<Operation | null>(
       (largest, operation) =>
@@ -491,6 +497,7 @@ export default function App() {
       (operation) =>
         !operation.categoryKey && (!operation.splits || operation.splits.length === 0)
     ).length;
+    const categorizedCount = Math.max(expenseOperations.length - uncategorizedCount, 0);
 
     return {
       expenseOperations,
@@ -498,8 +505,25 @@ export default function App() {
       averageDailyExpense: days.size > 0 ? totalExpenses / days.size : 0,
       largestExpense,
       uncategorizedCount,
+      categorizedCount,
+      categorizationRate:
+        expenseOperations.length > 0 ? (categorizedCount / expenseOperations.length) * 100 : 0,
+      savingsRate: totalIncomes > 0 ? ((totalIncomes - totalExpenses) / totalIncomes) * 100 : null,
     };
-  }, [filteredOperations, totalExpenses]);
+  }, [filteredOperations, totalExpenses, totalIncomes]);
+
+  const analysisMetrics = useMemo(() => {
+    const topThreeTotal = categorySummaries
+      .slice(0, 3)
+      .reduce((total, category) => total + category.total, 0);
+
+    return {
+      averageMonthlyExpense:
+        analysisMonthlyData.length > 0 ? totalExpenses / analysisMonthlyData.length : 0,
+      topThreeShare: totalExpenses > 0 ? (topThreeTotal / totalExpenses) * 100 : 0,
+      topCategory: categorySummaries[0] || null,
+    };
+  }, [analysisMonthlyData.length, categorySummaries, totalExpenses]);
 
   const downloadReport = () => {
     const escapeCsv = (value: string | number) =>
@@ -1595,6 +1619,54 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
+                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4">
+                  <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+                    Despesas no recorte
+                  </div>
+                  <div className="text-xl font-black text-rose-400 mt-1">
+                    {totalExpenses.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1">
+                    {reportMetrics.expenseOperations.length} lançamentos
+                  </div>
+                </div>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4">
+                  <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+                    Média mensal
+                  </div>
+                  <div className="text-xl font-black text-amber-300 mt-1">
+                    {analysisMetrics.averageMonthlyExpense.toLocaleString('pt-BR', {
+                      style: 'currency',
+                      currency: 'BRL',
+                    })}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1">baseada no período selecionado</div>
+                </div>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4">
+                  <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+                    Maior categoria
+                  </div>
+                  <div className="text-base font-black text-indigo-300 mt-1 truncate" title={analysisMetrics.topCategory?.name}>
+                    {analysisMetrics.topCategory?.name || 'Nenhuma'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1">
+                    {analysisMetrics.topCategory
+                      ? `${analysisMetrics.topCategory.percentage.toFixed(1)}% das despesas`
+                      : 'Sem dados no período'}
+                  </div>
+                </div>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4">
+                  <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+                    Concentração Top 3
+                  </div>
+                  <div className="text-xl font-black text-teal-300 mt-1">
+                    {analysisMetrics.topThreeShare.toFixed(1)}%
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1">das despesas por categoria</div>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
                 <div className="lg:col-span-2 bg-slate-950/60 border border-slate-800 rounded-2xl p-4">
                   <div className="flex justify-between items-center mb-2">
@@ -1862,6 +1934,43 @@ export default function App() {
                   </div>
                 </div>
               </div>
+
+              <div className="mt-6 bg-slate-950/60 border border-slate-800 rounded-2xl p-5 print:bg-white print:border-slate-300">
+                <h3 className="text-sm font-bold text-slate-200 print:text-slate-950 mb-3">
+                  Indicadores de gestão
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                  <div>
+                    <div className="text-slate-500">Taxa de poupança</div>
+                    <div className={`text-lg font-black mt-1 ${
+                      reportMetrics.savingsRate !== null && reportMetrics.savingsRate >= 0
+                        ? 'text-emerald-400'
+                        : 'text-rose-400'
+                    } print:text-slate-950`}>
+                      {reportMetrics.savingsRate === null
+                        ? 'Indisponível'
+                        : `${reportMetrics.savingsRate.toFixed(1)}%`}
+                    </div>
+                    <div className="text-[11px] text-slate-500">saldo em relação às receitas</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500">Concentração Top 3</div>
+                    <div className="text-lg font-black text-indigo-300 print:text-slate-950 mt-1">
+                      {analysisMetrics.topThreeShare.toFixed(1)}%
+                    </div>
+                    <div className="text-[11px] text-slate-500">despesas nas três maiores categorias</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500">Cobertura de categorização</div>
+                    <div className="text-lg font-black text-teal-300 print:text-slate-950 mt-1">
+                      {reportMetrics.categorizationRate.toFixed(1)}%
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {reportMetrics.uncategorizedCount} sem categoria identificada
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -1903,6 +2012,45 @@ export default function App() {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            </div>
+
+            <div className="glass-card border border-slate-800/80 rounded-3xl p-6 print:border-slate-300 print:shadow-none">
+              <h3 className="text-sm font-bold text-slate-200 print:text-slate-950 mb-4">
+                Evolução mensal do fluxo
+              </h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-slate-500 border-b border-slate-800 print:border-slate-300">
+                    <tr>
+                      <th className="text-left py-2">Mês</th>
+                      <th className="text-right py-2">Receitas</th>
+                      <th className="text-right py-2">Despesas</th>
+                      <th className="text-right py-2">Saldo</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 print:divide-slate-300">
+                    {analysisMonthlyData.map((month) => {
+                      const balance = month.incomes - month.expenses;
+                      return (
+                        <tr key={month.month}>
+                          <td className="py-2 text-slate-300 print:text-slate-700">{month.month}</td>
+                          <td className="py-2 text-right text-emerald-300 print:text-slate-950">
+                            {month.incomes.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                          </td>
+                          <td className="py-2 text-right text-rose-300 print:text-slate-950">
+                            {month.expenses.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                          </td>
+                          <td className={`py-2 text-right font-semibold ${
+                            balance >= 0 ? 'text-blue-300' : 'text-rose-300'
+                          } print:text-slate-950`}>
+                            {balance.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
